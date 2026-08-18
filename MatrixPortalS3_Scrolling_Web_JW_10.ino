@@ -15,11 +15,23 @@
 
 #include <WiFi.h>
 #include <WiFiServer.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <Adafruit_Protomatter.h>
 
 // Credentials live in a separate, gitignored file. Copy
 // arduino_secrets.h.example to arduino_secrets.h and fill it in.
 #include "arduino_secrets.h"
+
+// ============================================================
+//  VERSION / UPDATE CHECK
+// ============================================================
+// FW_VERSION is the version built into this firmware.
+// version.txt in the repo holds the latest published version; the
+// "Check for Updates" button compares the two.
+#define FW_VERSION   "1.2.0"
+#define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
+#define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
 // ============================================================
 //  DEBUG
@@ -114,6 +126,7 @@ uint16_t   huePhase    = 0;
 char curMessage[BUF_SIZE];
 char newMessage[BUF_SIZE];
 bool newMessageAvailable = false;
+bool checkRequested      = false;   // web UI asked for a GitHub update check
 
 int32_t   scrollX  = PANEL_WIDTH;   // current pixel position of text start
 uint32_t  lastStep = 0;
@@ -329,6 +342,54 @@ void getData(const char *buf)
   // Color mode: /&CM=S (solid) or /&CM=R (rainbow)
   p = strstr(buf, "/&CM=");
   if (p) { p += 5; colorMode = (*p == 'R') ? CM_RAINBOW : CM_SOLID; }
+
+  // Update check: /&CHK=1  -> respond with JSON version comparison
+  p = strstr(buf, "/&CHK=");
+  if (p) checkRequested = true;
+}
+
+// ============================================================
+//  UPDATE CHECK  (fetch version.txt from GitHub over HTTPS)
+// ============================================================
+// Returns true if the dotted version 'remote' is newer than 'local'.
+bool versionNewer(const char *remote, const char *local)
+{
+  int r[4] = {0,0,0,0}, l[4] = {0,0,0,0};
+  sscanf(remote, "%d.%d.%d.%d", &r[0], &r[1], &r[2], &r[3]);
+  sscanf(local,  "%d.%d.%d.%d", &l[0], &l[1], &l[2], &l[3]);
+  for (int i = 0; i < 4; i++)
+    if (r[i] != l[i]) return r[i] > l[i];
+  return false;
+}
+
+// Fetch the latest published version string into 'out'.
+// Returns true on success (HTTP 200 with a non-empty body).
+bool fetchLatestVersion(char *out, size_t len)
+{
+  out[0] = '\0';
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  WiFiClientSecure secure;
+  secure.setInsecure();               // skip cert validation (hobby update check)
+
+  HTTPClient https;
+  https.setTimeout(6000);
+  if (!https.begin(secure, VERSION_URL)) return false;
+
+  int code = https.GET();
+  bool ok = false;
+  if (code == HTTP_CODE_OK) {
+    String body = https.getString();
+    body.trim();
+    if (body.length() && body.length() < len) {
+      strncpy(out, body.c_str(), len - 1);
+      out[len - 1] = '\0';
+      ok = true;
+    }
+  }
+  PRINT("\nUpdate check HTTP ", code);
+  https.end();
+  return ok;
 }
 
 // ============================================================
@@ -367,6 +428,7 @@ void handleWiFi(void)
     requestLine[0] = authLine[0] = lineBuf[0] = '\0';
     lineIdx = 0;
     requestCaptured = false;
+    checkRequested  = false;   // reset per request; getData re-sets if /&CHK= present
     state = S_WAIT_CONN;
     break;
 
@@ -435,6 +497,23 @@ void handleWiFi(void)
         "<p style='color:#444'>Enter your LED Ticker credentials.</p>"
         "</body></html>"
       );
+    } else if (checkRequested) {
+      // Update check: fetch version.txt from GitHub and reply with JSON.
+      checkRequested = false;
+      char latest[32];
+      bool ok = fetchLatestVersion(latest, sizeof(latest));
+      client.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
+      client.print("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+      client.print("{\"cur\":\"" FW_VERSION "\",");
+      if (ok) {
+        client.print("\"latest\":\"");
+        client.print(latest);
+        client.print("\",\"update\":");
+        client.print(versionNewer(latest, FW_VERSION) ? "true" : "false");
+        client.print("}");
+      } else {
+        client.print("\"latest\":\"\",\"update\":false,\"err\":\"Could not reach GitHub\"}");
+      }
     } else {
       client.print("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n");
 
@@ -497,6 +576,16 @@ void handleWiFi(void)
         "function tog(cls,el){document.querySelectorAll('.tb.'+cls).forEach(b=>b.classList.remove('on'));el.classList.add('on');}"
         "function upd(id,v){document.getElementById(id).innerText=v;}"
         "function sts(m){document.getElementById('st').innerText=m;}"
+        "function chk(){var m=document.getElementById('fwmsg');m.innerHTML='Contacting GitHub&hellip;';sts('Checking&hellip;');"
+        "var r=new XMLHttpRequest();r.open('GET','/&CHK=1/&nc='+Math.random(),true);r.timeout=9000;"
+        "r.ontimeout=function(){m.innerHTML='&#9888; Timed out contacting GitHub';sts('Check timed out');};"
+        "r.onreadystatechange=function(){if(r.readyState!=4)return;"
+        "try{var j=JSON.parse(r.responseText);"
+        "if(j.err){m.innerHTML='&#9888; '+j.err;sts('Check failed');}"
+        "else if(j.update){m.innerHTML='&#8593; Update available: <b>v'+j.latest+'</b> (installed v'+j.cur+'). "
+        "<a href=\"" REPO_URL "\" target=\"_blank\" style=\"color:var(--a)\">Open GitHub</a>';sts('Update available');}"
+        "else{m.innerHTML='&#10003; Up to date (v'+j.cur+').';sts('Up to date');}"
+        "}catch(e){m.innerHTML='&#9888; Unexpected response';sts('Check error');}};r.send();}"
         "</script></head><body>"
 
         "<h1>&#9632; JOES RGB TICKER &#9632;</h1>"
@@ -558,6 +647,13 @@ void handleWiFi(void)
         "</div></div>"
         "<div class=\"row\"><button class=\"btn prim\" onclick=\"apl()\">APPLY CONTROLS</button></div></div>"
 
+        "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#8635;</span>FIRMWARE</div>"
+        "<div class=\"row\"><span class=\"cl\">VERSION</span>"
+        "<span class=\"cv\" id=\"fwcur\" style=\"min-width:auto\">&#8230;</span>"
+        "<button class=\"btn\" onclick=\"chk()\">CHECK FOR UPDATES</button></div>"
+        "<div id=\"fwmsg\" style=\"font-size:.78rem;color:var(--muted);margin-top:12px;line-height:1.5\">"
+        "Compares this device against the latest version on GitHub.</div></div>"
+
         "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#128274;</span>ACTIVE USERS</div>"
         "<div id=\"ulist\" style=\"font-size:.8rem;color:var(--muted);line-height:2\">Loading...</div></div>"
 
@@ -585,6 +681,7 @@ void handleWiFi(void)
         client.print("</span>");
       }
       client.print("';}");
+      client.print("var fc=document.getElementById('fwcur');if(fc)fc.innerText='v" FW_VERSION "';");
       client.print("</script>");
     }
 

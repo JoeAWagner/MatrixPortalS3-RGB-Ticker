@@ -49,6 +49,8 @@ connect USB-C for flashing.
 - **Display controls** — scroll speed, text size (S/M/L/XL), brightness
   (0–100 %), text color picker, **solid / rainbow** color mode, and scroll
   direction
+- **Firmware** — shows the installed version and a **Check for Updates**
+  button that asks GitHub whether a newer version exists
 - **Blank** — clears the panel
 
 ## HTTP API
@@ -64,6 +66,7 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&CO=`  | Solid text color, `RRGGBB` hex | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |
 | `/&SD=`  | Scroll direction: `L` left, `R` right | `/&SD=L` |
+| `/&CHK=` | Check GitHub for a newer version; returns JSON | `/&CHK=1` |
 
 Example:
 ```bash
@@ -92,6 +95,23 @@ lines, `NUM_ADDR 4`). If your panel shows the image split or doubled, it likely
 uses a different scan rate — adjust `NUM_ADDR` / `PANEL_HEIGHT` and the address
 pins near the top of the `.ino`. Pin mapping there matches Adafruit's standard
 MatrixPortal S3 wiring.
+
+## Update checking & releasing
+
+The **Check for Updates** button makes the device fetch
+[`version.txt`](version.txt) from the `main` branch over HTTPS and compare it to
+the `FW_VERSION` compiled into the running firmware. It's a *notifier* — it tells
+you an update exists and links to the repo; it does not flash the device itself.
+
+To publish a new version:
+
+1. Bump **`FW_VERSION`** near the top of the `.ino`.
+2. Set the same value in **`version.txt`**.
+3. Commit and push to `main`.
+
+Devices still running an older build will then report "Update available" and you
+can reflash them over USB. (Versions are compared numerically, e.g. `1.10.0` is
+newer than `1.9.0`.)
 
 ## License
 
