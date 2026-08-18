@@ -69,6 +69,37 @@ Adafruit_Protomatter matrix(
   true);              // double-buffered for tear-free scrolling
 
 // ============================================================
+//  TYPES
+// ============================================================
+// These must appear before the first function definition in the sketch:
+// the Arduino build step auto-generates prototypes and inserts them above
+// that point, so any type used in a signature has to be declared first.
+#define BUF_SIZE 512
+
+enum ScrollDir  { DIR_LEFT, DIR_RIGHT };
+enum ColorMode  { CM_SOLID, CM_RAINBOW };
+
+// Each theme colors the rows by role rather than one flat color:
+//   wx = weather row, c1 = first message row (NOW), c2 = later rows (NEXT).
+struct Theme {
+  const char *name;
+  uint32_t    wx, c1, c2;
+  bool        rainbow;
+};
+
+// One display row. Short lines sit still; only overflowing lines scroll.
+struct Line {
+  char     text[BUF_SIZE];
+  int16_t  pixW;        // rendered width in pixels (text + icon)
+  int16_t  textW;       // text-only width, so the icon lands after it
+  int8_t   icon;        // -1 = none
+  uint8_t  role;        // 0 = weather, 1 = first msg row, 2 = later rows
+  bool     scrolls;     // true when pixW > PANEL_WIDTH
+  int32_t  x;           // current x offset (scrolling lines only)
+  uint32_t holdUntil;   // pause before a scroll cycle restarts
+};
+
+// ============================================================
 //  TEXT / SCROLL GEOMETRY
 // ============================================================
 // GFX classic font is a 6x8 cell (5x7 glyph). textSize scales it:
@@ -112,24 +143,13 @@ uint8_t numUsers = SECRET_NUM_USERS;
 // ============================================================
 //  DISPLAY STATE
 // ============================================================
-enum ScrollDir  { DIR_LEFT, DIR_RIGHT };
-enum ColorMode  { CM_SOLID, CM_RAINBOW };
-
 uint16_t   scrollSpeed   = 25;      // ms between 1px steps (lower = faster)
 ScrollDir  scrollDir     = DIR_LEFT;
 ColorMode  colorMode     = CM_SOLID;
 
 uint8_t    brightnessPct = 60;      // 0-100 (RGB panels are very bright)
 
-// ---- Color themes -------------------------------------------------------
-// Each theme colors the rows by role rather than one flat color:
-//   wx = weather row, c1 = first message row (NOW), c2 = later rows (NEXT).
-struct Theme {
-  const char *name;
-  uint32_t    wx, c1, c2;
-  bool        rainbow;
-};
-
+// ---- Color themes (see struct Theme in TYPES) ---------------------------
 const Theme themes[] = {
   { "AMBER",   0xF0A500, 0xF0A500, 0x9A6A00, false },  // classic ticker look
   { "MATRIX",  0x00FF41, 0x00FF41, 0x00802A, false },
@@ -149,7 +169,6 @@ uint32_t customColorRGB = 0xF0A500;
 #define RAINBOW_STEP  700           // hue advance per scroll step
 uint16_t   huePhase    = 0;
 
-#define BUF_SIZE 512
 char curMessage[BUF_SIZE];
 char newMessage[BUF_SIZE];
 bool newMessageAvailable = false;
@@ -188,18 +207,6 @@ const uint32_t iconColor[NUM_ICONS] = {
 };
 
 int8_t weatherIcon = -1;            // -1 = none, else index into iconBits
-
-// One display row. Short lines sit still; only overflowing lines scroll.
-struct Line {
-  char     text[BUF_SIZE];
-  int16_t  pixW;        // rendered width in pixels (text + icon)
-  int16_t  textW;       // text-only width, so the icon lands after it
-  int8_t   icon;        // -1 = none
-  uint8_t  role;        // 0 = weather, 1 = first msg row, 2 = later rows
-  bool     scrolls;     // true when pixW > PANEL_WIDTH
-  int32_t  x;           // current x offset (scrolling lines only)
-  uint32_t holdUntil;   // pause before a scroll cycle restarts
-};
 
 Line     lines[MAX_LINES];
 uint8_t  numLines = 0;

@@ -25,6 +25,7 @@ Using env vars keeps your credentials out of the source file.
 """
 
 import os
+import re
 import time
 import datetime
 import random
@@ -34,9 +35,13 @@ import warnings
 
 import requests
 import caldav
+import caldav.lib.error          # submodule needs an explicit import
 
 # caldav's date_search still works fine; silence its deprecation notice.
 warnings.filterwarnings("ignore", message=r".*date_search.*")
+
+# Present in newer caldav releases; treated as "never matches" if absent.
+RATE_LIMIT_ERROR = getattr(caldav.lib.error, "RateLimitError", ())
 
 # ── Configuration (env vars win; edit the fallbacks if you prefer) ────────────
 
@@ -125,6 +130,17 @@ log = logging.getLogger(__name__)
 
 
 # ── Calendar helpers ──────────────────────────────────────────────────────────
+
+def retry_after_seconds(exc, default: int = 1800) -> int:
+    """
+    Pull the server's Retry-After hint out of a rate-limit error.
+    Apple throttles repeated CalDAV logins and tells us how long to wait;
+    ignoring it just extends the block.
+    """
+    m = re.search(r"Retry after:?\s*(\d+)", str(exc))
+    seconds = int(m.group(1)) if m else default
+    return max(60, min(seconds, 7200))     # clamp to a sane 1 min .. 2 h
+
 
 def connect() -> list:
     """Open a CalDAV session once and return the list of calendars to reuse."""
@@ -310,12 +326,12 @@ def main() -> None:
     last_weather = None
     weather_due  = 0.0      # monotonic deadline for the next weather refresh
 
-    while True:
-        try:
-            if calendars is None:
-                calendars = connect()
+    calendar_due = 0.0      # set ahead when iCloud rate-limits us
 
-            # Weather refresh (independent of the calendar cadence).
+    while True:
+        # Weather first, and in its own try: it must keep working even when
+        # iCloud is unreachable or throttling us.
+        try:
             if time.monotonic() >= weather_due:
                 wx, icon = get_weather()
                 weather_due = time.monotonic() + WEATHER_MINS * 60
@@ -326,6 +342,17 @@ def main() -> None:
                         log.info("Weather: %s (icon %s)", wx, icon)
                     else:
                         log.warning("Weather push failed: %s", reason)
+        except Exception as e:
+            log.warning("Weather refresh error: %s", e)
+
+        # Calendar, paused entirely while a rate-limit backoff is in effect.
+        if time.monotonic() < calendar_due:
+            time.sleep(POLL_SECS)
+            continue
+
+        try:
+            if calendars is None:
+                calendars = connect()
 
             now = datetime.datetime.now(datetime.timezone.utc)
             now_ev, next_ev = now_and_next(collect_events(calendars, now), now)
@@ -355,8 +382,18 @@ def main() -> None:
             break   # wrong credentials won't fix themselves, stop retrying
 
         except Exception as e:
-            log.exception("Calendar error: %s", e)
-            calendars = None   # force a fresh CalDAV connection next loop
+            if RATE_LIMIT_ERROR and isinstance(e, RATE_LIMIT_ERROR):
+                # Apple throttles frequent CalDAV logins. Retrying on the normal
+                # cadence would only extend the block, so wait it out. Weather
+                # keeps updating in the meantime.
+                wait = retry_after_seconds(e)
+                log.warning("iCloud rate limited - pausing calendar for %d min "
+                            "(weather keeps updating)", wait // 60)
+                calendars    = None
+                calendar_due = time.monotonic() + wait
+            else:
+                log.exception("Calendar error: %s", e)
+                calendars = None   # force a fresh CalDAV connection next loop
 
         time.sleep(POLL_SECS)
 
