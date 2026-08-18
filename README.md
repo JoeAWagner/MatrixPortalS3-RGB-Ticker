@@ -75,18 +75,47 @@ curl -u joe:yourpass "http://<device-ip>/&MSG=On%20Air/&CO=ff0000/&CM=S/&"
 
 ## Calendar sync (optional)
 
-`calendar_sync.py` polls iCloud CalDAV every 60 s and pushes "In a Meeting: …"
-to the ticker when an event is active, or a free message otherwise. It uses only
-the `/&MSG=` endpoint.
+`calendar_sync.py` polls iCloud CalDAV and shows both what's on **now** and what's
+**up next**, e.g. `NOW: Standup    |    UP NEXT: 2:00 PM Design Review` (or
+`I am Free    |    UP NEXT: in 25 min 1:1 with Sam`). It uses only the `/&MSG=`
+endpoint, so nothing on the device changes.
 
 ```bash
 pip install caldav requests
 ```
-Then edit the config block at the top of `calendar_sync.py` (device IP, web-UI
-login, Apple ID + an [app-specific password](https://appleid.apple.com)) and run:
+
+Configure via environment variables (keeps credentials out of the file):
+
 ```bash
+export TICKER_IP=192.168.1.42          # from the Serial Monitor
+export TICKER_USER=joe
+export TICKER_PASS=your_web_ui_password
+export APPLE_ID=you@icloud.com
+export APPLE_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx   # appleid.apple.com
 python calendar_sync.py
 ```
+
+On Windows PowerShell use `$env:TICKER_IP="192.168.1.42"` etc. You can also just
+edit the fallback values at the top of the script. Generate the Apple
+app-specific password at [appleid.apple.com](https://appleid.apple.com) →
+Sign-In & Security → App-Specific Passwords.
+
+### Is the Python bridge the right approach?
+
+For **iCloud specifically, yes** — it's the pragmatic choice. iCloud has no clean
+public calendar API, so CalDAV is the only real option, and doing CalDAV + TLS +
+recurring-event/timezone parsing on the ESP32 itself is painful and fragile. The
+bridge also keeps your Apple app-password on a trusted machine instead of flashed
+into firmware. The main thing to improve is **reliability**: run it as a
+background service (Windows Task Scheduler / NSSM, or `launchd`/`systemd`) so it
+survives reboots instead of living in a terminal window.
+
+The one alternative worth knowing: if eliminating the always-on computer matters
+more than privacy, you can publish the calendar as a **secret `.ics` URL** (iCloud
+public calendar, or a Google "secret address") and have the ESP32 fetch and parse
+it directly — no PC required. The trade-offs are that the URL exposes event
+details to anyone who has it, and on-device `.ics` parsing handles recurring
+events and time zones poorly.
 
 ## Panel notes
 
