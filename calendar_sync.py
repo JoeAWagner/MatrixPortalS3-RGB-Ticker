@@ -50,12 +50,36 @@ APP_PASS   = os.environ.get("APPLE_APP_PASSWORD", "xxxx-xxxx-xxxx-xxxx")
 FREE_MSG        = "I am Free"   # shown as the "now" part when no meeting is active
 POLL_SECS       = 60           # how often to check (seconds)
 LOOKAHEAD_HOURS = 12           # how far ahead "Up Next" looks
-MAX_TITLE       = 40           # truncate long event titles (keeps scrolls sane)
-SEP             = "    |    "  # separator between NOW and UP NEXT (ASCII only)
+# At text size 1 a 64px row shows ~10 chars, so anything longer scrolls.
+# 28 keeps a typical title to about two scroll-widths instead of a marathon.
+MAX_TITLE       = 28           # truncate long event titles (keeps scrolls sane)
+SEP             = "|"          # row separator; firmware splits on '|' into lines
 
 REQUEST_TIMEOUT = 5            # seconds per HTTP attempt to the ticker
 SEND_ATTEMPTS   = 3            # attempts per update before giving up this cycle
 RETRY_DELAY     = 2            # seconds between those attempts
+
+# Weather (top row). Open-Meteo is free and needs no API key.
+WEATHER_ZIP     = os.environ.get("WEATHER_ZIP", "11786")   # Shoreham, NY
+WEATHER_UNITS   = "fahrenheit"   # or "celsius"
+WEATHER_MINS    = 15             # refresh interval (minutes)
+
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+# WMO weather codes -> short labels that fit a 64px row
+WMO = {
+    0: "Clear", 1: "Clear", 2: "Cloudy", 3: "Overcast",
+    45: "Fog", 48: "Fog",
+    51: "Drizzle", 53: "Drizzle", 55: "Drizzle",
+    56: "Freezing", 57: "Freezing",
+    61: "Rain", 63: "Rain", 65: "Hvy Rain",
+    66: "Icy Rain", 67: "Icy Rain",
+    71: "Snow", 73: "Snow", 75: "Hvy Snow", 77: "Snow",
+    80: "Showers", 81: "Showers", 82: "Showers",
+    85: "Snow", 86: "Snow",
+    95: "Storm", 96: "Storm", 99: "Storm",
+}
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -165,26 +189,75 @@ def _fmt_when(dt, now) -> str:
 
 
 def compose(now_ev, next_ev, now) -> str:
-    """Build the ticker string from the now/next events."""
+    """
+    Build the ticker string from the now/next events. Rows are separated by
+    '|', which the firmware splits into stacked lines on the panel.
+    """
     parts = [f"NOW: {_title(now_ev[2])}" if now_ev else FREE_MSG]
     if next_ev:
-        parts.append(f"UP NEXT: {_fmt_when(next_ev[0], now)} {_title(next_ev[2])}")
+        parts.append(f"NEXT: {_fmt_when(next_ev[0], now)} {_title(next_ev[2])}")
     return SEP.join(parts)
+
+
+# ── Weather ───────────────────────────────────────────────────────────────────
+
+_geo_cache = {}
+
+
+def _geocode(zip_code):
+    """Resolve a US ZIP to (lat, lon, name). Cached for the process lifetime."""
+    if zip_code in _geo_cache:
+        return _geo_cache[zip_code]
+    r = requests.get(GEOCODE_URL,
+                     params={"name": zip_code, "count": 1, "country": "US"},
+                     timeout=REQUEST_TIMEOUT)
+    r.raise_for_status()
+    results = r.json().get("results") or []
+    if not results:
+        raise ValueError(f"could not geocode ZIP {zip_code}")
+    hit = results[0]
+    loc = (hit["latitude"], hit["longitude"], hit.get("name", zip_code))
+    _geo_cache[zip_code] = loc
+    return loc
+
+
+def get_weather():
+    """
+    Return a short weather string for the ticker's top row, e.g. '72F Sunny'.
+    Returns None if the lookup fails (the caller just keeps the previous value).
+    """
+    try:
+        lat, lon, _name = _geocode(WEATHER_ZIP)
+        r = requests.get(FORECAST_URL, params={
+            "latitude": lat, "longitude": lon,
+            "current": "temperature_2m,weather_code",
+            "temperature_unit": WEATHER_UNITS,
+            "timezone": "auto",
+        }, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        cur = r.json()["current"]
+        temp = round(cur["temperature_2m"])
+        unit = "F" if WEATHER_UNITS == "fahrenheit" else "C"
+        desc = WMO.get(cur["weather_code"], "")
+        return f"{temp}{unit} {desc}".strip()
+    except Exception as e:
+        log.warning("Weather lookup failed: %s", e)
+        return None
 
 
 # ── Ticker output ─────────────────────────────────────────────────────────────
 
-def send_ticker(message: str):
+def send_ticker(value: str, param: str = "MSG"):
     """
-    Push a URL-encoded message to the ESP32, retrying a few times on a failed
-    connection. Returns (ok, reason). Never raises for network problems, so an
-    unplugged or unreachable device can't crash the sync loop.
+    Push a URL-encoded value to the ESP32 (param is MSG or WX), retrying a few
+    times on a failed connection. Returns (ok, reason). Never raises for network
+    problems, so an unplugged or unreachable device can't crash the sync loop.
     """
-    encoded = urllib.parse.quote(message)
+    encoded = urllib.parse.quote(value)
     reason  = "unknown error"
     for attempt in range(SEND_ATTEMPTS):
         nc  = random.randint(1, 99999)   # cache-buster, same as the web UI
-        url = f"http://{ESP32_IP}/&MSG={encoded}/&nc={nc}"
+        url = f"http://{ESP32_IP}/&{param}={encoded}/&nc={nc}"
         try:
             resp = requests.get(url, auth=(ESP32_USER, ESP32_PASS), timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
@@ -212,11 +285,25 @@ def main() -> None:
     last_message = None
     online       = True     # ticker reachability, tracked only for tidy logging
     last_reason  = None
+    last_weather = None
+    weather_due  = 0.0      # monotonic deadline for the next weather refresh
 
     while True:
         try:
             if calendars is None:
                 calendars = connect()
+
+            # Weather refresh (independent of the calendar cadence).
+            if time.monotonic() >= weather_due:
+                wx = get_weather()
+                weather_due = time.monotonic() + WEATHER_MINS * 60
+                if wx and wx != last_weather:
+                    ok, reason = send_ticker(wx, param="WX")
+                    if ok:
+                        last_weather = wx
+                        log.info("Weather: %s", wx)
+                    else:
+                        log.warning("Weather push failed: %s", reason)
 
             now = datetime.datetime.now(datetime.timezone.utc)
             now_ev, next_ev = now_and_next(collect_events(calendars, now), now)

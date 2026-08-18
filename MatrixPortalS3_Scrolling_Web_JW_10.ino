@@ -29,7 +29,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.2.0"
+#define FW_VERSION   "1.3.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -76,15 +76,18 @@ Adafruit_Protomatter matrix(
 #define TEXT_SIZE_MIN 1
 #define TEXT_SIZE_MAX 4
 
-uint8_t textSize = 3;   // runtime-adjustable via the web UI (/&TS=)
+uint8_t textSize = 1;   // small font default; runtime-adjustable via /&TS=
 
 static inline int16_t charW(void)  { return 6 * textSize; }              // cell width
 static inline int16_t glyphH(void) { return 8 * textSize; }             // cell height
-static inline int16_t textY(void)                                       // vertical centering
-{
-  int16_t y = (PANEL_HEIGHT - glyphH()) / 2;
-  return y < 0 ? 0 : y;
-}
+
+// Panel is 64x32, so at size 1 we get four 8px rows. The layout stacks:
+//   row 0: weather (if set)
+//   rows below: the message, split on '|' into separate lines
+#define MAX_LINES     4
+#define LINE_GAP      0            // extra pixels between rows
+#define SCROLL_PAD   12            // blank pixels between scroll repeats
+#define END_PAUSE_MS 1200          // pause at the start of a scroll cycle
 
 // ============================================================
 //  WIFI
@@ -128,8 +131,21 @@ char newMessage[BUF_SIZE];
 bool newMessageAvailable = false;
 bool checkRequested      = false;   // web UI asked for a GitHub update check
 
-int32_t   scrollX  = PANEL_WIDTH;   // current pixel position of text start
-uint32_t  lastStep = 0;
+#define WX_SIZE 64
+char weatherMsg[WX_SIZE] = "";      // top-row weather, pushed via /&WX=
+
+// One display row. Short lines sit still; only overflowing lines scroll.
+struct Line {
+  char     text[BUF_SIZE];
+  int16_t  pixW;        // rendered width in pixels
+  bool     scrolls;     // true when pixW > PANEL_WIDTH
+  int32_t  x;           // current x offset (scrolling lines only)
+  uint32_t holdUntil;   // pause before a scroll cycle restarts
+};
+
+Line     lines[MAX_LINES];
+uint8_t  numLines = 0;
+uint32_t lastStep = 0;
 
 // ============================================================
 //  COLOR HELPERS
@@ -169,50 +185,135 @@ uint16_t hsv565(uint16_t hue, uint8_t sat, uint8_t val)
 // ============================================================
 //  SCROLL RENDERER
 // ============================================================
+// Trim leading/trailing spaces (old presets padded text to fake centering).
+static void trimInto(char *dst, const char *src, size_t cap)
+{
+  while (*src == ' ') src++;
+  size_t n = strlen(src);
+  while (n && src[n-1] == ' ') n--;
+  if (n > cap - 1) n = cap - 1;
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+static void initLine(Line &ln, const char *text)
+{
+  trimInto(ln.text, text, sizeof(ln.text));
+  ln.pixW      = (int16_t)strlen(ln.text) * charW();
+  ln.scrolls   = ln.pixW > PANEL_WIDTH;
+  ln.x         = ln.scrolls ? 0 : (PANEL_WIDTH - ln.pixW) / 2;  // center if it fits
+  ln.holdUntil = millis() + END_PAUSE_MS;
+}
+
+// Rebuild the row list from the weather string + current message.
+// The message is split on '|' so the sync can send "NOW: ... | UP NEXT: ..."
+// and get two stacked rows.
+void layoutLines(void)
+{
+  numLines = 0;
+  uint8_t rowCap = PANEL_HEIGHT / (glyphH() + LINE_GAP);
+  if (rowCap > MAX_LINES) rowCap = MAX_LINES;
+
+  if (weatherMsg[0] && numLines < rowCap)
+    initLine(lines[numLines++], weatherMsg);
+
+  // Walk curMessage, splitting on '|'
+  const char *p = curMessage;
+  while (*p && numLines < rowCap) {
+    const char *bar = strchr(p, '|');
+    char part[BUF_SIZE];
+    size_t n = bar ? (size_t)(bar - p) : strlen(p);
+    if (n > sizeof(part) - 1) n = sizeof(part) - 1;
+    memcpy(part, p, n);
+    part[n] = '\0';
+
+    // Skip separator-only fragments
+    char probe[BUF_SIZE];
+    trimInto(probe, part, sizeof(probe));
+    if (probe[0]) initLine(lines[numLines++], part);
+
+    if (!bar) break;
+    p = bar + 1;
+  }
+}
+
+// Draw one row at vertical offset y, honoring color mode.
+static void drawLine(const Line &ln, int16_t y)
+{
+  uint16_t solid = matrix.color565(dim(txtR), dim(txtG), dim(txtB));
+
+  // A scrolling line is drawn twice (offset by its width + pad) so the text
+  // wraps around seamlessly instead of blanking between cycles.
+  int reps = ln.scrolls ? 2 : 1;
+  for (int r = 0; r < reps; r++) {
+    int32_t base = ln.x + (int32_t)r * (ln.pixW + SCROLL_PAD);
+    if (colorMode == CM_RAINBOW) {
+      int32_t cx = base;
+      for (size_t i = 0; ln.text[i]; i++) {
+        if (cx > -charW() && cx < PANEL_WIDTH) {
+          matrix.setTextColor(hsv565(huePhase + (uint16_t)(i * 2600), 255, dim(255)));
+          matrix.setCursor(cx, y);
+          matrix.write((uint8_t)ln.text[i]);
+        }
+        cx += charW();
+      }
+    } else {
+      matrix.setTextColor(solid);
+      matrix.setCursor(base, y);
+      matrix.print(ln.text);
+    }
+  }
+}
+
 void renderFrame(void)
 {
   matrix.fillScreen(0);
   matrix.setTextWrap(false);
   matrix.setTextSize(textSize);
 
-  if (curMessage[0] != '\0') {
-    int16_t y = textY();
-    if (colorMode == CM_RAINBOW) {
-      int32_t cx = scrollX;
-      for (size_t i = 0; curMessage[i]; i++) {
-        uint16_t hue = huePhase + (uint16_t)(i * 2600);
-        matrix.setTextColor(hsv565(hue, 255, dim(255)));
-        matrix.setCursor(cx, y);
-        matrix.write((uint8_t)curMessage[i]);
-        cx += charW();
-      }
-    } else {
-      matrix.setTextColor(matrix.color565(dim(txtR), dim(txtG), dim(txtB)));
-      matrix.setCursor(scrollX, y);
-      matrix.print(curMessage);
-    }
-  }
+  int16_t rowH  = glyphH() + LINE_GAP;
+  int16_t total = numLines * rowH - LINE_GAP;
+  int16_t y     = (PANEL_HEIGHT - total) / 2;   // vertically center the block
+  if (y < 0) y = 0;
+
+  for (uint8_t i = 0; i < numLines; i++, y += rowH)
+    drawLine(lines[i], y);
 
   matrix.show();
 }
 
 void advanceScroll(void)
 {
-  int32_t textPixW = (int32_t)strlen(curMessage) * charW();
+  uint32_t now = millis();
+  bool anyScrolling = false;
 
-  if (scrollDir == DIR_LEFT) {
-    scrollX--;
-    if (scrollX < -textPixW) {          // fully off the left edge
-      scrollX = PANEL_WIDTH;            // re-enter from the right
-      if (newMessageAvailable) { strcpy(curMessage, newMessage); newMessageAvailable = false; }
-    }
-  } else {
-    scrollX++;
-    if (scrollX > PANEL_WIDTH) {         // fully off the right edge
-      scrollX = -textPixW;             // re-enter from the left
-      if (newMessageAvailable) { strcpy(curMessage, newMessage); newMessageAvailable = false; }
+  for (uint8_t i = 0; i < numLines; i++) {
+    Line &ln = lines[i];
+    if (!ln.scrolls) continue;          // short lines stay put
+    anyScrolling = true;
+    if (now < ln.holdUntil) continue;   // brief pause at cycle start
+
+    int32_t span = ln.pixW + SCROLL_PAD;
+    if (scrollDir == DIR_LEFT) {
+      if (--ln.x <= -span) { ln.x += span; ln.holdUntil = now + END_PAUSE_MS; }
+    } else {
+      if (++ln.x >= 0)     { ln.x -= span; ln.holdUntil = now + END_PAUSE_MS; }
     }
   }
+
+  // A pending message swaps in immediately when nothing is mid-scroll;
+  // otherwise it waits for the scroll to come back around to the start.
+  if (newMessageAvailable) {
+    bool atRest = true;
+    for (uint8_t i = 0; i < numLines && atRest; i++)
+      if (lines[i].scrolls && lines[i].x != 0) atRest = false;
+    if (!anyScrolling || atRest) {
+      strcpy(curMessage, newMessage);
+      newMessageAvailable = false;
+      layoutLines();
+    }
+  }
+
   huePhase += RAINBOW_STEP;
 }
 
@@ -277,10 +378,11 @@ uint8_t htoi(char c)
   return 0;
 }
 
-void decodeMessage(const char *pStart, const char *pEnd)
+// URL-decode [pStart,pEnd) into dst (at most cap-1 chars + NUL).
+void decodeInto(char *dst, size_t cap, const char *pStart, const char *pEnd)
 {
-  char *psz = newMessage;
-  while (pStart != pEnd && psz < newMessage + BUF_SIZE - 1) {
+  char *psz = dst;
+  while (pStart != pEnd && psz < dst + cap - 1) {
     if (*pStart == '%' && isxdigit(*(pStart+1)) && isxdigit(*(pStart+2))) {
       char c = (htoi(*++pStart) << 4);
       c     += htoi(*++pStart);
@@ -294,6 +396,11 @@ void decodeMessage(const char *pStart, const char *pEnd)
     }
   }
   *psz = '\0';
+}
+
+static inline void decodeMessage(const char *pStart, const char *pEnd)
+{
+  decodeInto(newMessage, BUF_SIZE, pStart, pEnd);
 }
 
 // ============================================================
@@ -322,7 +429,25 @@ void getData(const char *buf)
 
   // Text size: /&TS=1..4  (GFX classic font scale)
   p = strstr(buf, "/&TS=");
-  if (p) { textSize = constrain((int16_t)atoi(p + 5), TEXT_SIZE_MIN, TEXT_SIZE_MAX); }
+  if (p) {
+    uint8_t ts = constrain((int16_t)atoi(p + 5), TEXT_SIZE_MIN, TEXT_SIZE_MAX);
+    if (ts != textSize) { textSize = ts; layoutLines(); }   // geometry changed
+  }
+
+  // Weather line: /&WX=<text>/&   (empty value clears it)
+  p = strstr(buf, "/&WX=");
+  if (p) {
+    p += 5;
+    const char *end = strstr(p, "/&");
+    if (end) {
+      char raw[WX_SIZE];
+      decodeInto(raw, sizeof(raw), p, end);
+      strncpy(weatherMsg, raw, sizeof(weatherMsg) - 1);
+      weatherMsg[sizeof(weatherMsg) - 1] = '\0';
+      layoutLines();
+      PRINT("\nWeather: ", weatherMsg);
+    }
+  }
 
   p = strstr(buf, "/&BR=");
   if (p) { brightnessPct = constrain((int16_t)atoi(p + 5), 0, 100); }
@@ -418,6 +543,7 @@ void handleWiFi(void)
     curMessage[0]       = '\0';
     newMessage[0]       = '\0';
     newMessageAvailable = false;
+    numLines            = 0;        // drop all rows (weather included)
     matrix.fillScreen(0);
     matrix.show();
   }
@@ -563,6 +689,9 @@ void handleWiFi(void)
         "function sMsg(m){var r=new XMLHttpRequest();r.open('GET','/&MSG='+encodeURIComponent(m)+'/&nc='+Math.random(),false);r.send();sts('Sent → '+m);}"
         "function sTxt(){var m=document.getElementById('mi').value.trim();if(m)sMsg(m);}"
         "function blk(){var r=new XMLHttpRequest();r.open('GET','/&MSG=BLANK/&',false);r.send();sts('Display blanked');}"
+        "function pWx(v){var r=new XMLHttpRequest();r.open('GET','/&WX='+encodeURIComponent(v)+'/&nc='+Math.random(),false);r.send();}"
+        "function sWx(){var v=document.getElementById('wi').value.trim();if(v){pWx(v);sts('Weather set');}}"
+        "function clWx(){document.getElementById('wi').value='';pWx('');sts('Weather cleared');}"
         "function selP(el,v){sp=v;document.querySelectorAll('.pb').forEach(b=>b.classList.remove('sel'));el.classList.add('sel');}"
         "function sndP(){if(sp)sMsg(sp);else sts('Select a preset first');}"
         "function apl(){var s=document.getElementById('sv').value;var b=document.getElementById('bv').value;"
@@ -606,18 +735,32 @@ void handleWiFi(void)
         "<div class=\"row\">"
         "<button class=\"btn prim\" onclick=\"sTxt()\">SEND</button>"
         "<button class=\"btn dang\" onclick=\"blk()\">BLANK DISPLAY</button>"
-        "</div></div>"
+        "</div>"
+        "<p style=\"font-size:.7rem;color:var(--muted);margin-top:10px;line-height:1.5\">"
+        "Use <b>|</b> to split the message across rows, e.g."
+        " <span style=\"color:var(--ad)\">NOW: Lunch | UP NEXT: 1:00 PM Review</span>."
+        " Rows that fit stay still; only long rows scroll.</p></div>"
+
+        "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#9925;</span>WEATHER ROW</div>"
+        "<input type=\"text\" id=\"wi\" maxlength=\"60\" placeholder=\"e.g. 72F Sunny\""
+        " onkeydown=\"if(event.key==='Enter')sWx()\">"
+        "<div class=\"row\">"
+        "<button class=\"btn prim\" onclick=\"sWx()\">SET WEATHER</button>"
+        "<button class=\"btn\" onclick=\"clWx()\">CLEAR</button>"
+        "</div>"
+        "<p style=\"font-size:.7rem;color:var(--muted);margin-top:10px;line-height:1.5\">"
+        "Pinned to the top row. The calendar sync updates this automatically.</p></div>"
 
         "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#9654;</span>PRESET MESSAGES</div>"
         "<div class=\"grid\">"
-        "<button class=\"pb\" onclick=\"selP(this,'        In a Meeting!')\"><em>&#128197;</em>IN A MEETING</button>"
-        "<button class=\"pb\" onclick=\"selP(this,'          Welcome')\"><em>&#128075;</em>WELCOME</button>"
-        "<button class=\"pb\" onclick=\"selP(this,'         I am Free')\"><em>&#128994;</em>I AM FREE</button>"
-        "<button class=\"pb\" onclick=\"selP(this,'       I am Hungry :(')\"><em>&#127829;</em>HUNGRY</button>"
-        "<button class=\"pb\" onclick=\"selP(this,'     Doing Paperwork!')\"><em>&#128336;</em>PAPERWORK</button>"
-        "<button class=\"pb\" onclick=\"selP(this,'       Do Not Disturb')\"><em>&#128683;</em>DO NOT DISTURB</button>"
-        "<button class=\"pb\" onclick=\"selP(this,'          On Break')\"><em>&#9749;</em>ON BREAK</button>"
-        "<button class=\"pb\" onclick=\"selP(this,'    Done For The Day!')\"><em>&#128274;</em>DONE</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'In a Meeting!')\"><em>&#128197;</em>IN A MEETING</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'Welcome')\"><em>&#128075;</em>WELCOME</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'I am Free')\"><em>&#128994;</em>I AM FREE</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'I am Hungry :(')\"><em>&#127829;</em>HUNGRY</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'Doing Paperwork!')\"><em>&#128336;</em>PAPERWORK</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'Do Not Disturb')\"><em>&#128683;</em>DO NOT DISTURB</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'On Break')\"><em>&#9749;</em>ON BREAK</button>"
+        "<button class=\"pb\" onclick=\"selP(this,'Done For The Day!')\"><em>&#128274;</em>DONE</button>"
         "</div>"
         "<button class=\"btn prim\" onclick=\"sndP()\">SEND PRESET</button></div>"
 
@@ -626,9 +769,9 @@ void handleWiFi(void)
         "<input type=\"range\" id=\"sv\" min=\"5\" max=\"100\" value=\"25\" oninput=\"upd('sc',this.value)\">"
         "<span class=\"cv\" id=\"sc\">25</span></div>"
         "<div class=\"row\"><span class=\"cl\">TEXT SIZE</span><div class=\"tg\">"
-        "<button class=\"tb size\" data-v=\"1\" onclick=\"tog('size',this)\">S</button>"
+        "<button class=\"tb size on\" data-v=\"1\" onclick=\"tog('size',this)\">S</button>"
         "<button class=\"tb size\" data-v=\"2\" onclick=\"tog('size',this)\">M</button>"
-        "<button class=\"tb size on\" data-v=\"3\" onclick=\"tog('size',this)\">L</button>"
+        "<button class=\"tb size\" data-v=\"3\" onclick=\"tog('size',this)\">L</button>"
         "<button class=\"tb size\" data-v=\"4\" onclick=\"tog('size',this)\">XL</button>"
         "</div></div>"
         "<div class=\"row\"><span class=\"cl\">BRIGHTNESS</span>"
@@ -716,8 +859,8 @@ void setup()
   }
 
   curMessage[0] = newMessage[0] = '\0';
-  strcpy(curMessage, "       In A Meeting!");
-  scrollX = PANEL_WIDTH;
+  strcpy(curMessage, "Starting up...");
+  layoutLines();
   renderFrame();
 
   PRINT("\nConnecting to ", ssid);
@@ -742,7 +885,16 @@ void loop()
 
   if (millis() - lastStep >= scrollSpeed) {
     lastStep = millis();
-    advanceScroll();
-    renderFrame();
+
+    // Only animate when something actually moves: a scrolling line, a
+    // pending message swap, or rainbow mode (whose colors always cycle).
+    bool needsFrame = newMessageAvailable || (colorMode == CM_RAINBOW);
+    for (uint8_t i = 0; i < numLines && !needsFrame; i++)
+      if (lines[i].scrolls) needsFrame = true;
+
+    if (needsFrame) {
+      advanceScroll();
+      renderFrame();
+    }
   }
 }

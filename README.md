@@ -44,7 +44,12 @@ connect USB-C for flashing.
 
 ## Web UI
 
-- **Custom message** — type and send any text (scrolls continuously)
+- **Multi-line layout** — the 64×32 panel shows up to four rows at the default
+  small font. Messages split on `|` into separate rows, and a row only scrolls
+  if it's too wide to fit; short rows sit centered and still.
+- **Weather row** — a line pinned to the top of the display, set from the web UI
+  or pushed automatically by the calendar sync
+- **Custom message** — type and send any text
 - **Presets** — one-tap status messages (In a Meeting, On Break, …)
 - **Display controls** — scroll speed, text size (S/M/L/XL), brightness
   (0–100 %), text color picker, **solid / rainbow** color mode, and scroll
@@ -66,7 +71,11 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&CO=`  | Solid text color, `RRGGBB` hex | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |
 | `/&SD=`  | Scroll direction: `L` left, `R` right | `/&SD=L` |
+| `/&WX=`  | Weather text pinned to the top row (empty clears) | `/&WX=82F%20Clear/&` |
 | `/&CHK=` | Check GitHub for a newer version; returns JSON | `/&CHK=1` |
+
+Messages are split on `|` into stacked rows, so
+`/&MSG=NOW:%20Lunch|NEXT:%201:00%20PM%20Review/&` renders as two lines.
 
 Example:
 ```bash
@@ -75,10 +84,19 @@ curl -u joe:yourpass "http://<device-ip>/&MSG=On%20Air/&CO=ff0000/&CM=S/&"
 
 ## Calendar sync (optional)
 
-`calendar_sync.py` polls iCloud CalDAV and shows both what's on **now** and what's
-**up next**, e.g. `NOW: Standup    |    UP NEXT: 2:00 PM Design Review` (or
-`I am Free    |    UP NEXT: in 25 min 1:1 with Sam`). It uses only the `/&MSG=`
-endpoint, so nothing on the device changes.
+`calendar_sync.py` polls iCloud CalDAV and shows what's on **now** and what's
+**next** on separate rows, with current **weather** on the top row:
+
+```
+82F Clear
+NOW: Lunch
+NEXT: 1:00 PM Review
+```
+
+It sends the calendar rows via `/&MSG=` (separated by `|`) and the weather via
+`/&WX=`. Weather comes from [Open-Meteo](https://open-meteo.com) (free, no API
+key) for `WEATHER_ZIP` — set that env var to change location, and
+`WEATHER_UNITS` in the script to switch to Celsius.
 
 ```bash
 pip install caldav requests
