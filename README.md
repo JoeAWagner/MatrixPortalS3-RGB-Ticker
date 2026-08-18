@@ -47,6 +47,11 @@ connect USB-C for flashing.
 - **Multi-line layout** — the 64×32 panel shows up to four rows at the default
   small font. Messages split on `|` into separate rows, and a row only scrolls
   if it's too wide to fit; short rows sit centered and still.
+- **Sticky labels** — a leading label like `NOW:` or `NEXT:` stays pinned at the
+  left edge while only the text after it scrolls past, so you can always tell
+  which row you're reading. Toggle it off to scroll the whole row instead.
+- **Tunable motion** — line gap (0–6 px), park time (how long a row holds still
+  before it scrolls again), speed, and direction are all live sliders.
 - **Weather row** — a line pinned to the top of the display with a small icon
   after the text (sun, cloud, partly, rain, snow, storm, fog), set from the web
   UI or pushed automatically by the calendar sync
@@ -72,6 +77,8 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&SP=`  | Scroll step interval, ms (5–200; lower = faster) | `/&SP=25` |
 | `/&TS=`  | Text size 1–4 (S/M/L/XL; 4 = full 32 px height) | `/&TS=3` |
 | `/&LG=`  | Line gap 0–6 (blank pixels between rows) | `/&LG=2` |
+| `/&PK=`  | Park time 0–10000 ms a row holds still before scrolling | `/&PK=1500` |
+| `/&SK=`  | Sticky labels: `1` pins `NOW:`/`NEXT:`, `0` scrolls the whole row | `/&SK=1` |
 | `/&BR=`  | Brightness percent (0–100) | `/&BR=60` |
 | `/&CO=`  | Flat color override, `RRGGBB` hex (overrides the theme) | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |

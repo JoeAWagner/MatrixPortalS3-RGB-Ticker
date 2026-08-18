@@ -29,7 +29,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.5.0"
+#define FW_VERSION   "1.6.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -88,13 +88,20 @@ struct Theme {
 };
 
 // One display row. Short lines sit still; only overflowing lines scroll.
+//
+// A row may have a "sticky" label (e.g. "NOW:") that stays pinned at the left
+// while only the text after it scrolls. bodyOff splits text into the pinned
+// prefix [0, bodyOff) and the scrolling body [bodyOff, end).
 struct Line {
   char     text[BUF_SIZE];
+  uint16_t bodyOff;     // where the scrolling part starts (0 = whole row scrolls)
+  int16_t  labelW;      // pixels reserved for the pinned label (0 = none)
+  int16_t  bodyW;       // width of the scrolling part
   int16_t  pixW;        // rendered width in pixels (text + icon)
   int16_t  textW;       // text-only width, so the icon lands after it
   int8_t   icon;        // -1 = none
   uint8_t  role;        // 0 = weather, 1 = first msg row, 2 = later rows
-  bool     scrolls;     // true when pixW > PANEL_WIDTH
+  bool     scrolls;     // true when the body is wider than its window
   int32_t  x;           // current x offset (scrolling lines only)
   uint32_t holdUntil;   // pause before a scroll cycle restarts
 };
@@ -118,9 +125,12 @@ static inline int16_t glyphH(void) { return 8 * textSize; }             // cell 
 #define MAX_LINES     4
 #define LINE_GAP_MAX  6
 #define SCROLL_PAD   12            // blank pixels between scroll repeats
-#define END_PAUSE_MS 1200          // pause at the start of a scroll cycle
+#define PARK_MS_MAX  10000         // longest park time offered
 
-uint8_t lineGap = 2;               // blank pixels between rows (/&LG=)
+uint8_t  lineGap  = 2;             // blank pixels between rows (/&LG=)
+uint16_t parkMs   = 1500;          // how long a row sits still before scrolling (/&PK=)
+bool     stickyLabels = true;      // pin "NOW:" / "NEXT:" labels (/&SK=)
+#define LABEL_MAX_CHARS 8          // longest label we'll pin (keeps the window usable)
 
 // Height of one row including its spacing, and how many rows fit:
 // n rows occupy n*glyphH + (n-1)*gap pixels.
@@ -163,13 +173,17 @@ ColorMode  colorMode     = CM_SOLID;
 uint8_t    brightnessPct = 60;      // 0-100 (RGB panels are very bright)
 
 // ---- Color themes (see struct Theme in TYPES) ---------------------------
+// Rows are separated by HUE, not by brightness: a dimmed shade of the same
+// color just looks muddy on an LED panel, so every role gets its own bright,
+// fully-saturated color instead.
 const Theme themes[] = {
-  { "AMBER",   0xF0A500, 0xF0A500, 0x9A6A00, false },  // classic ticker look
-  { "MATRIX",  0x00FF41, 0x00FF41, 0x00802A, false },
-  { "OCEAN",   0x00E5FF, 0x3FA9FF, 0x0062A8, false },
-  { "SUNSET",  0xFFC400, 0xFF6B35, 0xC2185B, false },
-  { "MONO",    0xFFFFFF, 0xFFFFFF, 0x8A8A8A, false },
-  { "RAINBOW", 0,        0,        0,        true  },
+  //           weather     NOW         NEXT
+  { "AMBER",   0xFFD500,   0xFF8A00,   0xFFFFFF, false },  // yellow / orange / white
+  { "MATRIX",  0xCCFF00,   0x00FF41,   0x00FFC8, false },  // lime / green / aqua
+  { "OCEAN",   0x00FFE0,   0x3FA9FF,   0xB388FF, false },  // aqua / blue / violet
+  { "SUNSET",  0xFFC400,   0xFF5722,   0xFF4081, false },  // gold / orange / pink
+  { "MONO",    0xFFFFFF,   0xC8C8C8,   0x909090, false },  // white / light / mid grey
+  { "RAINBOW", 0,          0,          0,        true  },
 };
 #define NUM_THEMES (sizeof(themes) / sizeof(themes[0]))
 
@@ -305,17 +319,50 @@ static void trimInto(char *dst, const char *src, size_t cap)
   dst[n] = '\0';
 }
 
+// A row like "NOW: Lunch" is split so "NOW:" can stay pinned. Returns the
+// offset of the scrolling body, or 0 when there's no label worth pinning.
+static uint16_t findLabelSplit(const char *s)
+{
+  if (!stickyLabels) return 0;
+  for (uint16_t i = 0; i < LABEL_MAX_CHARS && s[i]; i++) {
+    if (s[i] == ':') {
+      uint16_t j = i + 1;
+      while (s[j] == ' ') j++;      // skip the space after the colon
+      return s[j] ? j : 0;          // need something left to scroll
+    }
+  }
+  return 0;
+}
+
 static void initLine(Line &ln, const char *text, uint8_t role, int8_t icon)
 {
   trimInto(ln.text, text, sizeof(ln.text));
-  ln.role      = role;
-  ln.icon      = icon;
-  ln.textW     = (int16_t)strlen(ln.text) * charW();
-  ln.pixW      = ln.textW;
+  ln.role  = role;
+  ln.icon  = icon;
+  ln.textW = (int16_t)strlen(ln.text) * charW();
+
+  ln.pixW = ln.textW;
   if (icon >= 0) ln.pixW += ICON_GAP * textSize + ICON_W * textSize;
-  ln.scrolls   = ln.pixW > PANEL_WIDTH;
-  ln.x         = ln.scrolls ? 0 : (PANEL_WIDTH - ln.pixW) / 2;  // center if it fits
-  ln.holdUntil = millis() + END_PAUSE_MS;
+
+  // Pinned label (never on the weather row - its icon already trails the text)
+  ln.bodyOff = (role == 0) ? 0 : findLabelSplit(ln.text);
+  if (ln.bodyOff) {
+    // Width of the label itself, without the space that follows it.
+    uint16_t labelChars = ln.bodyOff;
+    while (labelChars && ln.text[labelChars - 1] == ' ') labelChars--;
+    ln.labelW = (int16_t)labelChars * charW() + charW() / 2;   // + half-cell gutter
+    ln.bodyW  = (int16_t)strlen(ln.text + ln.bodyOff) * charW();
+    int16_t window = PANEL_WIDTH - ln.labelW;
+    ln.scrolls = ln.bodyW > window;
+    ln.x       = ln.scrolls ? 0 : 0;      // body sits right after the label
+  } else {
+    ln.labelW  = 0;
+    ln.bodyW   = ln.pixW;
+    ln.scrolls = ln.pixW > PANEL_WIDTH;
+    ln.x       = ln.scrolls ? 0 : (PANEL_WIDTH - ln.pixW) / 2;  // center if it fits
+  }
+
+  ln.holdUntil = millis() + parkMs;
 }
 
 // Rebuild the row list from the weather string + current message.
@@ -379,34 +426,44 @@ void layoutLines(void)
 // Draw one row at vertical offset y, honoring color mode.
 static void drawLine(const Line &ln, int16_t y)
 {
-  bool rainbow = (colorMode == CM_RAINBOW) && !customColor;
+  bool     rainbow   = (colorMode == CM_RAINBOW) && !customColor;
+  uint16_t col       = roleColor(ln.role);
+  int16_t  bodyStart = ln.labelW;             // 0 when there's no pinned label
+  const char *body   = ln.text + ln.bodyOff;
 
   // A scrolling line is drawn twice (offset by its width + pad) so the text
   // wraps around seamlessly instead of blanking between cycles.
   int reps = ln.scrolls ? 2 : 1;
   for (int r = 0; r < reps; r++) {
-    int32_t base = ln.x + (int32_t)r * (ln.pixW + SCROLL_PAD);
+    int32_t base = bodyStart + ln.x + (int32_t)r * (ln.bodyW + SCROLL_PAD);
 
-    if (rainbow) {
-      int32_t cx = base;
-      for (size_t i = 0; ln.text[i]; i++) {
-        if (cx > -charW() && cx < PANEL_WIDTH) {
-          matrix.setTextColor(hsv565(huePhase + (uint16_t)(i * 2600), 255, dim(255)));
-          matrix.setCursor(cx, y);
-          matrix.write((uint8_t)ln.text[i]);
-        }
-        cx += charW();
+    int32_t cx = base;
+    for (size_t i = 0; body[i]; i++) {
+      if (cx > -charW() && cx < PANEL_WIDTH) {
+        matrix.setTextColor(rainbow
+          ? hsv565(huePhase + (uint16_t)(i * 2600), 255, dim(255))
+          : col);
+        matrix.setCursor(cx, y);
+        matrix.write((uint8_t)body[i]);
       }
-    } else {
-      matrix.setTextColor(roleColor(ln.role));
-      matrix.setCursor(base, y);
-      matrix.print(ln.text);
+      cx += charW();
     }
 
     // Icon trails the text, in its own natural color.
     if (ln.icon >= 0)
       drawIcon(base + ln.textW + ICON_GAP * textSize, y,
                (uint8_t)ln.icon, textSize, rgb565(iconColor[ln.icon]));
+  }
+
+  // Pinned label last: blank whatever scrolled underneath it, then draw the
+  // label on top. Adafruit_GFX has no clip rect, so this erase is what gives
+  // the scrolling body a clean edge to disappear behind.
+  if (ln.labelW > 0) {
+    matrix.fillRect(0, y, ln.labelW, glyphH(), 0);
+    matrix.setTextColor(col);
+    matrix.setCursor(0, y);
+    for (uint16_t i = 0; i < ln.bodyOff; i++)
+      matrix.write((uint8_t)ln.text[i]);
   }
 }
 
@@ -438,11 +495,11 @@ void advanceScroll(void)
     anyScrolling = true;
     if (now < ln.holdUntil) continue;   // brief pause at cycle start
 
-    int32_t span = ln.pixW + SCROLL_PAD;
+    int32_t span = ln.bodyW + SCROLL_PAD;
     if (scrollDir == DIR_LEFT) {
-      if (--ln.x <= -span) { ln.x += span; ln.holdUntil = now + END_PAUSE_MS; }
+      if (--ln.x <= -span) { ln.x += span; ln.holdUntil = now + parkMs; }
     } else {
-      if (++ln.x >= 0)     { ln.x -= span; ln.holdUntil = now + END_PAUSE_MS; }
+      if (++ln.x >= 0)     { ln.x -= span; ln.holdUntil = now + parkMs; }
     }
   }
 
@@ -584,6 +641,17 @@ void getData(const char *buf)
   if (p) {
     uint8_t lg = constrain((int16_t)atoi(p + 5), 0, LINE_GAP_MAX);
     if (lg != lineGap) { lineGap = lg; layoutLines(); }
+  }
+
+  // Park time: /&PK=0..10000 ms a row sits still before scrolling again
+  p = strstr(buf, "/&PK=");
+  if (p) parkMs = constrain((int32_t)atol(p + 5), 0, PARK_MS_MAX);
+
+  // Sticky labels: /&SK=1 pins "NOW:"/"NEXT:", /&SK=0 scrolls the whole row
+  p = strstr(buf, "/&SK=");
+  if (p) {
+    bool sk = (*(p + 5) == '1');
+    if (sk != stickyLabels) { stickyLabels = sk; layoutLines(); }
   }
 
   // Weather line: /&WX=<text>/&   (empty value clears it)
@@ -876,9 +944,10 @@ void handleWiFi(void)
         "function apl(){var s=document.getElementById('sv').value;var b=document.getElementById('bv').value;"
         "var d=document.querySelector('.tb.dir.on');var t=document.querySelector('.th.on');"
         "var z=document.querySelector('.tb.size.on');"
-        "var g=document.getElementById('lg').value;"
-        "var url='/&SP='+s+'/&BR='+b+'/&LG='+g;"
-        "if(t)url+='/&TH='+t.dataset.v;"
+        "var g=document.getElementById('lg').value;var pk=document.getElementById('pk').value;"
+        "var k=document.querySelector('.tb.stk.on');"
+        "var url='/&SP='+s+'/&BR='+b+'/&LG='+g+'/&PK='+pk;"
+        "if(t)url+='/&TH='+t.dataset.v;if(k)url+='/&SK='+k.dataset.v;"
         "if(d)url+='/&SD='+d.dataset.v;if(z)url+='/&TS='+z.dataset.v;"
         "url+='/&nc='+Math.random();"
         "var r=new XMLHttpRequest();r.open('GET',url,false);r.send();sts('Controls applied');}"
@@ -962,6 +1031,14 @@ void handleWiFi(void)
         "<div class=\"row\"><span class=\"cl\">LINE GAP</span>"
         "<input type=\"range\" id=\"lg\" min=\"0\" max=\"6\" value=\"2\" oninput=\"upd('lgc',this.value)\">"
         "<span class=\"cv\" id=\"lgc\">2</span></div>"
+        "<div class=\"row\"><span class=\"cl\">PARK TIME</span>"
+        "<input type=\"range\" id=\"pk\" min=\"0\" max=\"10000\" step=\"250\" value=\"1500\""
+        " oninput=\"upd('pkc',(this.value/1000).toFixed(2)+'s')\">"
+        "<span class=\"cv\" id=\"pkc\" style=\"min-width:46px\">1.50s</span></div>"
+        "<div class=\"row\"><span class=\"cl\">STICKY LABELS</span><div class=\"tg\">"
+        "<button class=\"tb stk on\" data-v=\"1\" onclick=\"tog('stk',this)\">PINNED</button>"
+        "<button class=\"tb stk\" data-v=\"0\" onclick=\"tog('stk',this)\">SCROLL ALL</button>"
+        "</div></div>"
         "<div class=\"row\"><span class=\"cl\">TEXT SIZE</span><div class=\"tg\">"
         "<button class=\"tb size on\" data-v=\"1\" onclick=\"tog('size',this)\">S</button>"
         "<button class=\"tb size\" data-v=\"2\" onclick=\"tog('size',this)\">M</button>"
@@ -1054,6 +1131,12 @@ void handleWiFi(void)
       client.print("var lv=document.getElementById('lg');if(lv){lv.value=");
       client.print(lineGap);
       client.print(";upd('lgc',lv.value);}");
+      client.print("var pv=document.getElementById('pk');if(pv){pv.value=");
+      client.print(parkMs);
+      client.print(";upd('pkc',(pv.value/1000).toFixed(2)+'s');}");
+      client.print("var kb=document.querySelector('.tb.stk[data-v=\"");
+      client.print(stickyLabels ? 1 : 0);
+      client.print("\"]');if(kb)tog('stk',kb);");
       client.print("</script>");
     }
 
