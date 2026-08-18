@@ -55,9 +55,18 @@ connect USB-C for flashing.
 - **Weather row** — a line pinned to the top of the display with a small icon
   after the text (sun, cloud, partly, rain, snow, storm, fog), set from the web
   UI or pushed automatically by the calendar sync
-- **Color themes** — Amber, Matrix, Ocean, Sunset, Mono, and Rainbow. Each theme
-  colors rows *by role*, so the weather, NOW, and NEXT rows are distinguishable
-  at a glance. Icons keep their own natural colors in every theme.
+- **Color themes** — Sunset (default), Amber, Matrix, Siren, Neon, and Rainbow.
+  Each theme colors rows *by role* using a distinct hue per row, so the weather,
+  NOW, and NEXT rows are readable at a glance. Icons keep their own natural
+  colors in every theme.
+
+  | Theme | Weather | NOW | NEXT |
+  |---|---|---|---|
+  | Sunset | gold | orange | pink |
+  | Amber | yellow | orange | white |
+  | Matrix | lime | green | aqua |
+  | Siren | white | red | blue |
+  | Neon | yellow | magenta | cyan |
 - **Custom message** — type and send any text
 - **Presets** — one-tap status messages (In a Meeting, On Break, …)
 - **Display controls** — scroll speed, text size (S/M/L/XL), brightness
@@ -85,7 +94,7 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&SD=`  | Scroll direction: `L` left, `R` right | `/&SD=L` |
 | `/&WX=`  | Weather text pinned to the top row (empty clears) | `/&WX=82F%20Clear/&` |
 | `/&WI=`  | Weather icon 0-6 (`-1` none): sun, cloud, partly, rain, snow, storm, fog | `/&WI=0` |
-| `/&TH=`  | Color theme 0-5 (amber, matrix, ocean, sunset, mono, rainbow) | `/&TH=1` |
+| `/&TH=`  | Color theme 0–5 (sunset, amber, matrix, siren, neon, rainbow) | `/&TH=0` |
 | `/&CHK=` | Check GitHub for a newer version; returns JSON | `/&CHK=1` |
 
 Messages are split on `|` into stacked rows, so

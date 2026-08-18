@@ -29,7 +29,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.6.0"
+#define FW_VERSION   "1.7.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -127,8 +127,8 @@ static inline int16_t glyphH(void) { return 8 * textSize; }             // cell 
 #define SCROLL_PAD   12            // blank pixels between scroll repeats
 #define PARK_MS_MAX  10000         // longest park time offered
 
-uint8_t  lineGap  = 2;             // blank pixels between rows (/&LG=)
-uint16_t parkMs   = 1500;          // how long a row sits still before scrolling (/&PK=)
+uint8_t  lineGap  = 4;             // blank pixels between rows (/&LG=)
+uint16_t parkMs   = 2500;          // how long a row sits still before scrolling (/&PK=)
 bool     stickyLabels = true;      // pin "NOW:" / "NEXT:" labels (/&SK=)
 #define LABEL_MAX_CHARS 8          // longest label we'll pin (keeps the window usable)
 
@@ -166,11 +166,11 @@ uint8_t numUsers = SECRET_NUM_USERS;
 // ============================================================
 //  DISPLAY STATE
 // ============================================================
-uint16_t   scrollSpeed   = 25;      // ms between 1px steps (lower = faster)
+uint16_t   scrollSpeed   = 35;      // ms between 1px steps (lower = faster)
 ScrollDir  scrollDir     = DIR_LEFT;
 ColorMode  colorMode     = CM_SOLID;
 
-uint8_t    brightnessPct = 60;      // 0-100 (RGB panels are very bright)
+uint8_t    brightnessPct = 30;      // 0-100 (RGB panels are very bright)
 
 // ---- Color themes (see struct Theme in TYPES) ---------------------------
 // Rows are separated by HUE, not by brightness: a dimmed shade of the same
@@ -178,11 +178,11 @@ uint8_t    brightnessPct = 60;      // 0-100 (RGB panels are very bright)
 // fully-saturated color instead.
 const Theme themes[] = {
   //           weather     NOW         NEXT
+  { "SUNSET",  0xFFC400,   0xFF5722,   0xFF4081, false },  // gold / orange / pink
   { "AMBER",   0xFFD500,   0xFF8A00,   0xFFFFFF, false },  // yellow / orange / white
   { "MATRIX",  0xCCFF00,   0x00FF41,   0x00FFC8, false },  // lime / green / aqua
-  { "OCEAN",   0x00FFE0,   0x3FA9FF,   0xB388FF, false },  // aqua / blue / violet
-  { "SUNSET",  0xFFC400,   0xFF5722,   0xFF4081, false },  // gold / orange / pink
-  { "MONO",    0xFFFFFF,   0xC8C8C8,   0x909090, false },  // white / light / mid grey
+  { "SIREN",   0xFFFFFF,   0xFF2020,   0x2E7BFF, false },  // white / red / blue
+  { "NEON",    0xFFFF00,   0xFF00E0,   0x00E5FF, false },  // yellow / magenta / cyan
   { "RAINBOW", 0,          0,          0,        true  },
 };
 #define NUM_THEMES (sizeof(themes) / sizeof(themes[0]))
@@ -923,7 +923,7 @@ void handleWiFi(void)
         ".tb:hover{border-color:var(--ad);color:var(--a)}"
         ".thg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}"
         ".th{background:transparent;border:1px solid var(--br);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:.68rem;padding:8px 4px;border-radius:4px;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:center;gap:3px}"
-        ".th i{display:block;width:26px;height:5px;border-radius:2px}"
+        ".th i{display:block;width:26px;height:4px;border-radius:2px}"
         ".th.on{border-color:var(--a);color:var(--a);background:var(--ag);box-shadow:0 0 8px var(--ag)}"
         ".th:hover{border-color:var(--ad);color:var(--a)}"
         "select{width:100%;background:#000;border:1px solid var(--ad);color:var(--a);font-family:'Share Tech Mono',monospace;font-size:.85rem;padding:8px 10px;border-radius:4px;outline:none;margin-top:10px}"
@@ -1026,15 +1026,15 @@ void handleWiFi(void)
 
         "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#9654;</span>DISPLAY CONTROLS</div>"
         "<div class=\"row\"><span class=\"cl\">SPEED</span>"
-        "<input type=\"range\" id=\"sv\" min=\"5\" max=\"100\" value=\"25\" oninput=\"upd('sc',this.value)\">"
-        "<span class=\"cv\" id=\"sc\">25</span></div>"
+        "<input type=\"range\" id=\"sv\" min=\"5\" max=\"100\" value=\"35\" oninput=\"upd('sc',this.value)\">"
+        "<span class=\"cv\" id=\"sc\">35</span></div>"
         "<div class=\"row\"><span class=\"cl\">LINE GAP</span>"
-        "<input type=\"range\" id=\"lg\" min=\"0\" max=\"6\" value=\"2\" oninput=\"upd('lgc',this.value)\">"
-        "<span class=\"cv\" id=\"lgc\">2</span></div>"
+        "<input type=\"range\" id=\"lg\" min=\"0\" max=\"6\" value=\"4\" oninput=\"upd('lgc',this.value)\">"
+        "<span class=\"cv\" id=\"lgc\">4</span></div>"
         "<div class=\"row\"><span class=\"cl\">PARK TIME</span>"
-        "<input type=\"range\" id=\"pk\" min=\"0\" max=\"10000\" step=\"250\" value=\"1500\""
+        "<input type=\"range\" id=\"pk\" min=\"0\" max=\"10000\" step=\"250\" value=\"2500\""
         " oninput=\"upd('pkc',(this.value/1000).toFixed(2)+'s')\">"
-        "<span class=\"cv\" id=\"pkc\" style=\"min-width:46px\">1.50s</span></div>"
+        "<span class=\"cv\" id=\"pkc\" style=\"min-width:46px\">2.50s</span></div>"
         "<div class=\"row\"><span class=\"cl\">STICKY LABELS</span><div class=\"tg\">"
         "<button class=\"tb stk on\" data-v=\"1\" onclick=\"tog('stk',this)\">PINNED</button>"
         "<button class=\"tb stk\" data-v=\"0\" onclick=\"tog('stk',this)\">SCROLL ALL</button>"
@@ -1046,23 +1046,29 @@ void handleWiFi(void)
         "<button class=\"tb size\" data-v=\"4\" onclick=\"tog('size',this)\">XL</button>"
         "</div></div>"
         "<div class=\"row\"><span class=\"cl\">BRIGHTNESS</span>"
-        "<input type=\"range\" id=\"bv\" min=\"5\" max=\"100\" value=\"60\" oninput=\"upd('bc',this.value)\">"
-        "<span class=\"cv\" id=\"bc\">60</span></div>"
+        "<input type=\"range\" id=\"bv\" min=\"5\" max=\"100\" value=\"30\" oninput=\"upd('bc',this.value)\">"
+        "<span class=\"cv\" id=\"bc\">30</span></div>"
         "<div class=\"row\"><span class=\"cl\">THEME</span></div>"
         "<div class=\"thg\">"
         "<button class=\"th on\" data-v=\"0\" onclick=\"togTh(this)\">"
-        "<i style=\"background:#f0a500\"></i><i style=\"background:#9a6a00\"></i>AMBER</button>"
+        "<i style=\"background:#ffc400\"></i><i style=\"background:#ff5722\"></i>"
+        "<i style=\"background:#ff4081\"></i>SUNSET</button>"
         "<button class=\"th\" data-v=\"1\" onclick=\"togTh(this)\">"
-        "<i style=\"background:#00ff41\"></i><i style=\"background:#00802a\"></i>MATRIX</button>"
+        "<i style=\"background:#ffd500\"></i><i style=\"background:#ff8a00\"></i>"
+        "<i style=\"background:#ffffff\"></i>AMBER</button>"
         "<button class=\"th\" data-v=\"2\" onclick=\"togTh(this)\">"
-        "<i style=\"background:#3fa9ff\"></i><i style=\"background:#0062a8\"></i>OCEAN</button>"
+        "<i style=\"background:#ccff00\"></i><i style=\"background:#00ff41\"></i>"
+        "<i style=\"background:#00ffc8\"></i>MATRIX</button>"
         "<button class=\"th\" data-v=\"3\" onclick=\"togTh(this)\">"
-        "<i style=\"background:#ff6b35\"></i><i style=\"background:#c2185b\"></i>SUNSET</button>"
+        "<i style=\"background:#ffffff\"></i><i style=\"background:#ff2020\"></i>"
+        "<i style=\"background:#2e7bff\"></i>SIREN</button>"
         "<button class=\"th\" data-v=\"4\" onclick=\"togTh(this)\">"
-        "<i style=\"background:#ffffff\"></i><i style=\"background:#8a8a8a\"></i>MONO</button>"
+        "<i style=\"background:#ffff00\"></i><i style=\"background:#ff00e0\"></i>"
+        "<i style=\"background:#00e5ff\"></i>NEON</button>"
         "<button class=\"th\" data-v=\"5\" onclick=\"togTh(this)\">"
-        "<i style=\"background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f)\"></i>"
-        "<i style=\"background:linear-gradient(90deg,#f0f,#00f,#0ff,#0f0,#ff0,#f00)\"></i>RAINBOW</button>"
+        "<i style=\"background:linear-gradient(90deg,#f00,#ff0,#0f0)\"></i>"
+        "<i style=\"background:linear-gradient(90deg,#0f0,#0ff,#00f)\"></i>"
+        "<i style=\"background:linear-gradient(90deg,#00f,#f0f,#f00)\"></i>RAINBOW</button>"
         "</div>"
         "<div class=\"row\"><span class=\"cl\">DIRECTION</span><div class=\"tg\">"
         "<button class=\"tb dir on\" data-v=\"L\" onclick=\"tog('dir',this)\">&#8592; LEFT</button>"
