@@ -1,0 +1,17 @@
+# Real credentials — never commit. Use arduino_secrets.h.example as a template.
+arduino_secrets.h
+
+# Build / IDE artifacts
+build/
+*.bin
+*.elf
+*.hex
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
