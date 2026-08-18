@@ -57,10 +57,20 @@ RETRY_DELAY     = 2            # seconds between those attempts
 
 CALDAV_URL = "https://caldav.icloud.com"
 
+# Always log to the console; also log to a rotating file if SYNC_LOG is set
+# (the background-service launcher sets this).
+_handlers = [logging.StreamHandler()]
+_log_file = os.environ.get("SYNC_LOG")
+if _log_file:
+    from logging.handlers import RotatingFileHandler
+    _handlers.append(RotatingFileHandler(
+        _log_file, maxBytes=1_000_000, backupCount=3, encoding="utf-8"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=_handlers,
 )
 log = logging.getLogger(__name__)
 

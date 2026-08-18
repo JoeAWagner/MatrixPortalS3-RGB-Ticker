@@ -1,5 +1,9 @@
-# Real credentials — never commit. Use arduino_secrets.h.example as a template.
+# Real credentials — never commit. Use the .example files as templates.
 arduino_secrets.h
+sync.config.ps1
+
+# Runtime logs
+*.log
 
 # Build / IDE artifacts
 build/

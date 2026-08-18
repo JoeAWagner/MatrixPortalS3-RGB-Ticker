@@ -105,6 +105,26 @@ each update a few times, logs the outage **once**, stays quiet while it's down,
 and automatically resends the current status (and logs "reachable again") as soon
 as the device comes back.
 
+### Run it automatically at logon (Windows)
+
+So the sync isn't a terminal you have to keep open, register it as a Scheduled
+Task that starts at logon and restarts itself if it stops:
+
+1. `Copy-Item sync.config.example.ps1 sync.config.ps1` and fill in your values
+   (this file is gitignored). At minimum set `APPLE_APP_PASSWORD`.
+2. Register the task (no admin needed):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install-task.ps1
+   ```
+3. Start it now without waiting for a logon:
+   ```powershell
+   Start-ScheduledTask -TaskName MatrixPortalCalendarSync
+   ```
+
+It logs to `calendar_sync.log` (rotating, next to the scripts). Remove the task
+with `install-task.ps1 -Uninstall`. You can also just run `run_sync.ps1` directly
+in a terminal if you prefer to watch it live.
+
 ### Is the Python bridge the right approach?
 
 For **iCloud specifically, yes** — it's the pragmatic choice. iCloud has no clean
