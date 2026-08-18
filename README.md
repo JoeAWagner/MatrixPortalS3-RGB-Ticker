@@ -46,8 +46,9 @@ connect USB-C for flashing.
 
 - **Custom message** — type and send any text (scrolls continuously)
 - **Presets** — one-tap status messages (In a Meeting, On Break, …)
-- **Display controls** — scroll speed, brightness (0–100 %), text color picker,
-  **solid / rainbow** color mode, and scroll direction
+- **Display controls** — scroll speed, text size (S/M/L/XL), brightness
+  (0–100 %), text color picker, **solid / rainbow** color mode, and scroll
+  direction
 - **Blank** — clears the panel
 
 ## HTTP API
@@ -58,6 +59,7 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 |-----------|---------|---------|
 | `/&MSG=` | Set scrolling text (URL-encoded; `BLANK` clears) | `/&MSG=Hello%20World/&` |
 | `/&SP=`  | Scroll step interval, ms (5–200; lower = faster) | `/&SP=25` |
+| `/&TS=`  | Text size 1–4 (S/M/L/XL; 4 = full 32 px height) | `/&TS=3` |
 | `/&BR=`  | Brightness percent (0–100) | `/&BR=60` |
 | `/&CO=`  | Solid text color, `RRGGBB` hex | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |

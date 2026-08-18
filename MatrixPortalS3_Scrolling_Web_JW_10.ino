@@ -59,10 +59,20 @@ Adafruit_Protomatter matrix(
 // ============================================================
 //  TEXT / SCROLL GEOMETRY
 // ============================================================
-#define TEXT_SIZE   3                       // GFX classic font scale
-#define CHAR_W      (6 * TEXT_SIZE)          // cell width  (6px * size)
-#define GLYPH_H     (8 * TEXT_SIZE)          // cell height (8px * size)
-#define TEXT_Y      ((PANEL_HEIGHT - GLYPH_H) / 2)  // vertical centering
+// GFX classic font is a 6x8 cell (5x7 glyph). textSize scales it:
+//   1 = 6x8   2 = 12x16   3 = 18x24   4 = 24x32 (fills panel height)
+#define TEXT_SIZE_MIN 1
+#define TEXT_SIZE_MAX 4
+
+uint8_t textSize = 3;   // runtime-adjustable via the web UI (/&TS=)
+
+static inline int16_t charW(void)  { return 6 * textSize; }              // cell width
+static inline int16_t glyphH(void) { return 8 * textSize; }             // cell height
+static inline int16_t textY(void)                                       // vertical centering
+{
+  int16_t y = (PANEL_HEIGHT - glyphH()) / 2;
+  return y < 0 ? 0 : y;
+}
 
 // ============================================================
 //  WIFI
@@ -150,21 +160,22 @@ void renderFrame(void)
 {
   matrix.fillScreen(0);
   matrix.setTextWrap(false);
-  matrix.setTextSize(TEXT_SIZE);
+  matrix.setTextSize(textSize);
 
   if (curMessage[0] != '\0') {
+    int16_t y = textY();
     if (colorMode == CM_RAINBOW) {
       int32_t cx = scrollX;
       for (size_t i = 0; curMessage[i]; i++) {
         uint16_t hue = huePhase + (uint16_t)(i * 2600);
         matrix.setTextColor(hsv565(hue, 255, dim(255)));
-        matrix.setCursor(cx, TEXT_Y);
+        matrix.setCursor(cx, y);
         matrix.write((uint8_t)curMessage[i]);
-        cx += CHAR_W;
+        cx += charW();
       }
     } else {
       matrix.setTextColor(matrix.color565(dim(txtR), dim(txtG), dim(txtB)));
-      matrix.setCursor(scrollX, TEXT_Y);
+      matrix.setCursor(scrollX, y);
       matrix.print(curMessage);
     }
   }
@@ -174,7 +185,7 @@ void renderFrame(void)
 
 void advanceScroll(void)
 {
-  int32_t textPixW = (int32_t)strlen(curMessage) * CHAR_W;
+  int32_t textPixW = (int32_t)strlen(curMessage) * charW();
 
   if (scrollDir == DIR_LEFT) {
     scrollX--;
@@ -295,6 +306,10 @@ void getData(const char *buf)
 
   p = strstr(buf, "/&SP=");
   if (p) { scrollSpeed = constrain((int16_t)atoi(p + 5), 5, 200); }
+
+  // Text size: /&TS=1..4  (GFX classic font scale)
+  p = strstr(buf, "/&TS=");
+  if (p) { textSize = constrain((int16_t)atoi(p + 5), TEXT_SIZE_MIN, TEXT_SIZE_MAX); }
 
   p = strstr(buf, "/&BR=");
   if (p) { brightnessPct = constrain((int16_t)atoi(p + 5), 0, 100); }
@@ -474,8 +489,9 @@ void handleWiFi(void)
         "function apl(){var s=document.getElementById('sv').value;var b=document.getElementById('bv').value;"
         "var c=document.getElementById('cp').value.substring(1);"
         "var d=document.querySelector('.tb.dir.on');var m=document.querySelector('.tb.mode.on');"
+        "var z=document.querySelector('.tb.size.on');"
         "var url='/&SP='+s+'/&BR='+b+'/&CO='+c;"
-        "if(d)url+='/&SD='+d.dataset.v;if(m)url+='/&CM='+m.dataset.v;"
+        "if(d)url+='/&SD='+d.dataset.v;if(m)url+='/&CM='+m.dataset.v;if(z)url+='/&TS='+z.dataset.v;"
         "url+='/&nc='+Math.random();"
         "var r=new XMLHttpRequest();r.open('GET',url,false);r.send();sts('Controls applied');}"
         "function tog(cls,el){document.querySelectorAll('.tb.'+cls).forEach(b=>b.classList.remove('on'));el.classList.add('on');}"
@@ -520,6 +536,12 @@ void handleWiFi(void)
         "<div class=\"row\"><span class=\"cl\">SPEED</span>"
         "<input type=\"range\" id=\"sv\" min=\"5\" max=\"100\" value=\"25\" oninput=\"upd('sc',this.value)\">"
         "<span class=\"cv\" id=\"sc\">25</span></div>"
+        "<div class=\"row\"><span class=\"cl\">TEXT SIZE</span><div class=\"tg\">"
+        "<button class=\"tb size\" data-v=\"1\" onclick=\"tog('size',this)\">S</button>"
+        "<button class=\"tb size\" data-v=\"2\" onclick=\"tog('size',this)\">M</button>"
+        "<button class=\"tb size on\" data-v=\"3\" onclick=\"tog('size',this)\">L</button>"
+        "<button class=\"tb size\" data-v=\"4\" onclick=\"tog('size',this)\">XL</button>"
+        "</div></div>"
         "<div class=\"row\"><span class=\"cl\">BRIGHTNESS</span>"
         "<input type=\"range\" id=\"bv\" min=\"5\" max=\"100\" value=\"60\" oninput=\"upd('bc',this.value)\">"
         "<span class=\"cv\" id=\"bc\">60</span></div>"
