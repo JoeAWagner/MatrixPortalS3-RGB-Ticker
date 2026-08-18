@@ -100,6 +100,11 @@ edit the fallback values at the top of the script. Generate the Apple
 app-specific password at [appleid.apple.com](https://appleid.apple.com) →
 Sign-In & Security → App-Specific Passwords.
 
+If the ticker is unplugged or off the network, the sync keeps running: it retries
+each update a few times, logs the outage **once**, stays quiet while it's down,
+and automatically resends the current status (and logs "reachable again") as soon
+as the device comes back.
+
 ### Is the Python bridge the right approach?
 
 For **iCloud specifically, yes** — it's the pragmatic choice. iCloud has no clean

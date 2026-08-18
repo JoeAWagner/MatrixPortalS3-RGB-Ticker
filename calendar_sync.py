@@ -49,6 +49,10 @@ LOOKAHEAD_HOURS = 12           # how far ahead "Up Next" looks
 MAX_TITLE       = 40           # truncate long event titles (keeps scrolls sane)
 SEP             = "    |    "  # separator between NOW and UP NEXT (ASCII only)
 
+REQUEST_TIMEOUT = 5            # seconds per HTTP attempt to the ticker
+SEND_ATTEMPTS   = 3            # attempts per update before giving up this cycle
+RETRY_DELAY     = 2            # seconds between those attempts
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 CALDAV_URL = "https://caldav.icloud.com"
@@ -151,14 +155,34 @@ def compose(now_ev, next_ev, now) -> str:
 
 # ── Ticker output ─────────────────────────────────────────────────────────────
 
-def send_to_ticker(message: str) -> None:
-    """Send a URL-encoded message to the ESP32 via its web interface."""
+def send_ticker(message: str):
+    """
+    Push a URL-encoded message to the ESP32, retrying a few times on a failed
+    connection. Returns (ok, reason). Never raises for network problems, so an
+    unplugged or unreachable device can't crash the sync loop.
+    """
     encoded = urllib.parse.quote(message)
-    nc      = random.randint(1, 99999)   # cache-buster, same as the web UI
-    url     = f"http://{ESP32_IP}/&MSG={encoded}/&nc={nc}"
-    resp    = requests.get(url, auth=(ESP32_USER, ESP32_PASS), timeout=5)
-    resp.raise_for_status()
-    log.info("Sent: %r", message)
+    reason  = "unknown error"
+    for attempt in range(SEND_ATTEMPTS):
+        nc  = random.randint(1, 99999)   # cache-buster, same as the web UI
+        url = f"http://{ESP32_IP}/&MSG={encoded}/&nc={nc}"
+        try:
+            resp = requests.get(url, auth=(ESP32_USER, ESP32_PASS), timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            return True, "ok"
+        except requests.exceptions.HTTPError as e:
+            # Reached the device but it refused us (e.g. 401) — retrying won't help.
+            code = e.response.status_code if e.response is not None else "?"
+            return False, f"ticker rejected request (HTTP {code}) — check TICKER_USER/TICKER_PASS"
+        except requests.exceptions.ConnectionError:
+            reason = f"cannot reach {ESP32_IP} (device off, or wrong IP?)"
+        except requests.exceptions.Timeout:
+            reason = f"timed out reaching {ESP32_IP} (device slow or busy?)"
+        except requests.exceptions.RequestException as e:
+            reason = f"request failed: {e}"
+        if attempt + 1 < SEND_ATTEMPTS:
+            time.sleep(RETRY_DELAY)
+    return False, reason
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -167,6 +191,8 @@ def main() -> None:
     log.info("Calendar sync started — polling every %ds", POLL_SECS)
     calendars    = None
     last_message = None
+    online       = True     # ticker reachability, tracked only for tidy logging
+    last_reason  = None
 
     while True:
         try:
@@ -177,24 +203,31 @@ def main() -> None:
             now_ev, next_ev = now_and_next(collect_events(calendars, now), now)
             message = compose(now_ev, next_ev, now)
 
-            # Only push an update when the message actually changes, so the
-            # display isn't reset every poll unnecessarily.
+            # Only push when the text changes. Because last_message is updated
+            # ONLY on a successful send, a pending update keeps retrying every
+            # poll until the device is reachable again — then it goes through.
             if message != last_message:
-                send_to_ticker(message)
-                last_message = message
-
-        except requests.exceptions.ConnectionError:
-            log.error("Cannot reach ESP32 at %s — is it on the network?", ESP32_IP)
-
-        except requests.exceptions.HTTPError as e:
-            log.error("ESP32 returned an error: %s", e)
+                ok, reason = send_ticker(message)
+                if ok:
+                    last_message = message
+                    if not online:
+                        log.info("Ticker reachable again — updates resumed")
+                    online, last_reason = True, None
+                    log.info("Sent: %r", message)
+                else:
+                    # Log once when it goes offline (or the reason changes),
+                    # then stay quiet while it keeps retrying in the background.
+                    if online or reason != last_reason:
+                        log.warning("Ticker update failed: %s (retrying every %ds)",
+                                    reason, POLL_SECS)
+                    online, last_reason = False, reason
 
         except caldav.lib.error.AuthorizationError:
             log.critical("iCloud auth failed — check APPLE_ID and APPLE_APP_PASSWORD")
             break   # wrong credentials won't fix themselves, stop retrying
 
         except Exception as e:
-            log.exception("Unexpected error: %s", e)
+            log.exception("Calendar error: %s", e)
             calendars = None   # force a fresh CalDAV connection next loop
 
         time.sleep(POLL_SECS)
