@@ -47,8 +47,12 @@ connect USB-C for flashing.
 - **Multi-line layout** — the 64×32 panel shows up to four rows at the default
   small font. Messages split on `|` into separate rows, and a row only scrolls
   if it's too wide to fit; short rows sit centered and still.
-- **Weather row** — a line pinned to the top of the display, set from the web UI
-  or pushed automatically by the calendar sync
+- **Weather row** — a line pinned to the top of the display with a small icon
+  after the text (sun, cloud, partly, rain, snow, storm, fog), set from the web
+  UI or pushed automatically by the calendar sync
+- **Color themes** — Amber, Matrix, Ocean, Sunset, Mono, and Rainbow. Each theme
+  colors rows *by role*, so the weather, NOW, and NEXT rows are distinguishable
+  at a glance. Icons keep their own natural colors in every theme.
 - **Custom message** — type and send any text
 - **Presets** — one-tap status messages (In a Meeting, On Break, …)
 - **Display controls** — scroll speed, text size (S/M/L/XL), brightness
@@ -68,10 +72,12 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&SP=`  | Scroll step interval, ms (5–200; lower = faster) | `/&SP=25` |
 | `/&TS=`  | Text size 1–4 (S/M/L/XL; 4 = full 32 px height) | `/&TS=3` |
 | `/&BR=`  | Brightness percent (0–100) | `/&BR=60` |
-| `/&CO=`  | Solid text color, `RRGGBB` hex | `/&CO=f0a500` |
+| `/&CO=`  | Flat color override, `RRGGBB` hex (overrides the theme) | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |
 | `/&SD=`  | Scroll direction: `L` left, `R` right | `/&SD=L` |
 | `/&WX=`  | Weather text pinned to the top row (empty clears) | `/&WX=82F%20Clear/&` |
+| `/&WI=`  | Weather icon 0-6 (`-1` none): sun, cloud, partly, rain, snow, storm, fog | `/&WI=0` |
+| `/&TH=`  | Color theme 0-5 (amber, matrix, ocean, sunset, mono, rainbow) | `/&TH=1` |
 | `/&CHK=` | Check GitHub for a newer version; returns JSON | `/&CHK=1` |
 
 Messages are split on `|` into stacked rows, so

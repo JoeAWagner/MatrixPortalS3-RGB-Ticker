@@ -29,7 +29,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.3.0"
+#define FW_VERSION   "1.4.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -119,8 +119,32 @@ uint16_t   scrollSpeed   = 25;      // ms between 1px steps (lower = faster)
 ScrollDir  scrollDir     = DIR_LEFT;
 ColorMode  colorMode     = CM_SOLID;
 
-uint8_t    txtR = 0xF0, txtG = 0xA5, txtB = 0x00;  // solid color (amber)
 uint8_t    brightnessPct = 60;      // 0-100 (RGB panels are very bright)
+
+// ---- Color themes -------------------------------------------------------
+// Each theme colors the rows by role rather than one flat color:
+//   wx = weather row, c1 = first message row (NOW), c2 = later rows (NEXT).
+struct Theme {
+  const char *name;
+  uint32_t    wx, c1, c2;
+  bool        rainbow;
+};
+
+const Theme themes[] = {
+  { "AMBER",   0xF0A500, 0xF0A500, 0x9A6A00, false },  // classic ticker look
+  { "MATRIX",  0x00FF41, 0x00FF41, 0x00802A, false },
+  { "OCEAN",   0x00E5FF, 0x3FA9FF, 0x0062A8, false },
+  { "SUNSET",  0xFFC400, 0xFF6B35, 0xC2185B, false },
+  { "MONO",    0xFFFFFF, 0xFFFFFF, 0x8A8A8A, false },
+  { "RAINBOW", 0,        0,        0,        true  },
+};
+#define NUM_THEMES (sizeof(themes) / sizeof(themes[0]))
+
+uint8_t themeIdx = 0;
+
+// A /&CO= request overrides the theme with one flat color (API back-compat).
+bool     customColor    = false;
+uint32_t customColorRGB = 0xF0A500;
 
 #define RAINBOW_STEP  700           // hue advance per scroll step
 uint16_t   huePhase    = 0;
@@ -134,10 +158,44 @@ bool checkRequested      = false;   // web UI asked for a GitHub update check
 #define WX_SIZE 64
 char weatherMsg[WX_SIZE] = "";      // top-row weather, pushed via /&WX=
 
+// ---- Weather icons ------------------------------------------------------
+// 8x8 monochrome bitmaps, one byte per row, MSB = leftmost pixel. Drawn
+// after the weather text and scaled to match the current text size.
+#define ICON_W 8
+#define ICON_H 8
+#define ICON_GAP 2                  // pixels between text and icon
+
+const uint8_t iconBits[][ICON_H] PROGMEM = {
+  { 0x18,0x99,0x3C,0x7E,0x7E,0x3C,0x99,0x18 },  // 0 SUN   (clear)
+  { 0x00,0x18,0x3C,0x7E,0xFF,0x7E,0x00,0x00 },  // 1 CLOUD (overcast)
+  { 0x10,0x54,0x38,0x7C,0xFE,0x7C,0x00,0x00 },  // 2 PARTLY
+  { 0x38,0x7C,0xFE,0x7C,0x00,0x48,0x90,0x24 },  // 3 RAIN
+  { 0x10,0x54,0x38,0xFE,0x38,0x54,0x10,0x00 },  // 4 SNOW
+  { 0x38,0x7C,0xFE,0x7C,0x18,0x30,0x7C,0x18 },  // 5 STORM
+  { 0x00,0x7C,0x00,0xFE,0x00,0x7C,0x00,0xFE },  // 6 FOG
+};
+#define NUM_ICONS (sizeof(iconBits) / sizeof(iconBits[0]))
+
+// Natural colors so icons read at a glance regardless of the text theme.
+const uint32_t iconColor[NUM_ICONS] = {
+  0xFFD000,   // sun    - yellow
+  0xB0B0B0,   // cloud  - grey
+  0xE0C060,   // partly - pale gold
+  0x40A0FF,   // rain   - blue
+  0xFFFFFF,   // snow   - white
+  0xFF40C0,   // storm  - magenta
+  0x9AA0A6,   // fog    - slate
+};
+
+int8_t weatherIcon = -1;            // -1 = none, else index into iconBits
+
 // One display row. Short lines sit still; only overflowing lines scroll.
 struct Line {
   char     text[BUF_SIZE];
-  int16_t  pixW;        // rendered width in pixels
+  int16_t  pixW;        // rendered width in pixels (text + icon)
+  int16_t  textW;       // text-only width, so the icon lands after it
+  int8_t   icon;        // -1 = none
+  uint8_t  role;        // 0 = weather, 1 = first msg row, 2 = later rows
   bool     scrolls;     // true when pixW > PANEL_WIDTH
   int32_t  x;           // current x offset (scrolling lines only)
   uint32_t holdUntil;   // pause before a scroll cycle restarts
@@ -182,6 +240,37 @@ uint16_t hsv565(uint16_t hue, uint8_t sat, uint8_t val)
   return matrix.color565(r, g, b);
 }
 
+// Pack a 24-bit RGB value into RGB565, scaled by the brightness setting.
+uint16_t rgb565(uint32_t rgb)
+{
+  return matrix.color565(dim((rgb >> 16) & 0xFF),
+                         dim((rgb >>  8) & 0xFF),
+                         dim( rgb        & 0xFF));
+}
+
+// Color for a row, honoring the active theme (or a /&CO= override).
+uint16_t roleColor(uint8_t role)
+{
+  if (customColor) return rgb565(customColorRGB);
+  const Theme &t = themes[themeIdx];
+  return rgb565(role == 0 ? t.wx : (role == 1 ? t.c1 : t.c2));
+}
+
+// Draw an 8x8 icon scaled by 'scale', skipping pixels off-panel.
+void drawIcon(int32_t x, int16_t y, uint8_t idx, uint8_t scale, uint16_t color)
+{
+  if (idx >= NUM_ICONS) return;
+  for (uint8_t row = 0; row < ICON_H; row++) {
+    uint8_t bits = pgm_read_byte(&iconBits[idx][row]);
+    for (uint8_t col = 0; col < ICON_W; col++) {
+      if (!(bits & (0x80 >> col))) continue;
+      int32_t px = x + (int32_t)col * scale;
+      if (px + scale <= 0 || px >= PANEL_WIDTH) continue;
+      matrix.fillRect(px, y + row * scale, scale, scale, color);
+    }
+  }
+}
+
 // ============================================================
 //  SCROLL RENDERER
 // ============================================================
@@ -196,10 +285,14 @@ static void trimInto(char *dst, const char *src, size_t cap)
   dst[n] = '\0';
 }
 
-static void initLine(Line &ln, const char *text)
+static void initLine(Line &ln, const char *text, uint8_t role, int8_t icon)
 {
   trimInto(ln.text, text, sizeof(ln.text));
-  ln.pixW      = (int16_t)strlen(ln.text) * charW();
+  ln.role      = role;
+  ln.icon      = icon;
+  ln.textW     = (int16_t)strlen(ln.text) * charW();
+  ln.pixW      = ln.textW;
+  if (icon >= 0) ln.pixW += ICON_GAP * textSize + ICON_W * textSize;
   ln.scrolls   = ln.pixW > PANEL_WIDTH;
   ln.x         = ln.scrolls ? 0 : (PANEL_WIDTH - ln.pixW) / 2;  // center if it fits
   ln.holdUntil = millis() + END_PAUSE_MS;
@@ -215,9 +308,10 @@ void layoutLines(void)
   if (rowCap > MAX_LINES) rowCap = MAX_LINES;
 
   if (weatherMsg[0] && numLines < rowCap)
-    initLine(lines[numLines++], weatherMsg);
+    initLine(lines[numLines++], weatherMsg, 0, weatherIcon);
 
   // Walk curMessage, splitting on '|'
+  uint8_t msgRow = 0;
   const char *p = curMessage;
   while (*p && numLines < rowCap) {
     const char *bar = strchr(p, '|');
@@ -230,7 +324,10 @@ void layoutLines(void)
     // Skip separator-only fragments
     char probe[BUF_SIZE];
     trimInto(probe, part, sizeof(probe));
-    if (probe[0]) initLine(lines[numLines++], part);
+    if (probe[0]) {
+      initLine(lines[numLines++], part, msgRow == 0 ? 1 : 2, -1);
+      msgRow++;
+    }
 
     if (!bar) break;
     p = bar + 1;
@@ -240,14 +337,15 @@ void layoutLines(void)
 // Draw one row at vertical offset y, honoring color mode.
 static void drawLine(const Line &ln, int16_t y)
 {
-  uint16_t solid = matrix.color565(dim(txtR), dim(txtG), dim(txtB));
+  bool rainbow = (colorMode == CM_RAINBOW) && !customColor;
 
   // A scrolling line is drawn twice (offset by its width + pad) so the text
   // wraps around seamlessly instead of blanking between cycles.
   int reps = ln.scrolls ? 2 : 1;
   for (int r = 0; r < reps; r++) {
     int32_t base = ln.x + (int32_t)r * (ln.pixW + SCROLL_PAD);
-    if (colorMode == CM_RAINBOW) {
+
+    if (rainbow) {
       int32_t cx = base;
       for (size_t i = 0; ln.text[i]; i++) {
         if (cx > -charW() && cx < PANEL_WIDTH) {
@@ -258,10 +356,15 @@ static void drawLine(const Line &ln, int16_t y)
         cx += charW();
       }
     } else {
-      matrix.setTextColor(solid);
+      matrix.setTextColor(roleColor(ln.role));
       matrix.setCursor(base, y);
       matrix.print(ln.text);
     }
+
+    // Icon trails the text, in its own natural color.
+    if (ln.icon >= 0)
+      drawIcon(base + ln.textW + ICON_GAP * textSize, y,
+               (uint8_t)ln.icon, textSize, rgb565(iconColor[ln.icon]));
   }
 }
 
@@ -452,16 +555,37 @@ void getData(const char *buf)
   p = strstr(buf, "/&BR=");
   if (p) { brightnessPct = constrain((int16_t)atoi(p + 5), 0, 100); }
 
-  // Solid text color as 6 hex digits: /&CO=RRGGBB
+  // Color theme: /&TH=0..N  (see the themes[] table)
+  p = strstr(buf, "/&TH=");
+  if (p) {
+    int16_t t = atoi(p + 5);
+    if (t >= 0 && t < (int16_t)NUM_THEMES) {
+      themeIdx    = (uint8_t)t;
+      customColor = false;               // theme wins over any /&CO= override
+      colorMode   = themes[themeIdx].rainbow ? CM_RAINBOW : CM_SOLID;
+    }
+  }
+
+  // Flat color override as 6 hex digits: /&CO=RRGGBB  (API back-compat)
   p = strstr(buf, "/&CO=");
   if (p) {
     p += 5;
     if (isxdigit(p[0]) && isxdigit(p[1]) && isxdigit(p[2]) &&
         isxdigit(p[3]) && isxdigit(p[4]) && isxdigit(p[5])) {
-      txtR = (htoi(p[0]) << 4) | htoi(p[1]);
-      txtG = (htoi(p[2]) << 4) | htoi(p[3]);
-      txtB = (htoi(p[4]) << 4) | htoi(p[5]);
+      customColorRGB = ((uint32_t)((htoi(p[0]) << 4) | htoi(p[1])) << 16) |
+                       ((uint32_t)((htoi(p[2]) << 4) | htoi(p[3])) <<  8) |
+                        (uint32_t)((htoi(p[4]) << 4) | htoi(p[5]));
+      customColor = true;
+      colorMode   = CM_SOLID;
     }
+  }
+
+  // Weather icon: /&WI=0..6, or -1/empty for none
+  p = strstr(buf, "/&WI=");
+  if (p) {
+    int16_t ic = atoi(p + 5);
+    weatherIcon = (ic >= 0 && ic < (int16_t)NUM_ICONS) ? (int8_t)ic : -1;
+    layoutLines();
   }
 
   // Color mode: /&CM=S (solid) or /&CM=R (rainbow)
@@ -680,6 +804,12 @@ void handleWiFi(void)
         ".tb{flex:1;background:transparent;border:1px solid var(--br);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:.75rem;padding:7px 4px;border-radius:4px;cursor:pointer;transition:all .15s;text-align:center}"
         ".tb.on{border-color:var(--a);color:var(--a);background:var(--ag)}"
         ".tb:hover{border-color:var(--ad);color:var(--a)}"
+        ".thg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}"
+        ".th{background:transparent;border:1px solid var(--br);color:var(--muted);font-family:'Share Tech Mono',monospace;font-size:.68rem;padding:8px 4px;border-radius:4px;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:center;gap:3px}"
+        ".th i{display:block;width:26px;height:5px;border-radius:2px}"
+        ".th.on{border-color:var(--a);color:var(--a);background:var(--ag);box-shadow:0 0 8px var(--ag)}"
+        ".th:hover{border-color:var(--ad);color:var(--a)}"
+        "select{width:100%;background:#000;border:1px solid var(--ad);color:var(--a);font-family:'Share Tech Mono',monospace;font-size:.85rem;padding:8px 10px;border-radius:4px;outline:none;margin-top:10px}"
         ".sbar{background:#000;border:1px solid var(--br);border-radius:4px;padding:9px 13px;font-size:.75rem;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:8px}"
         ".dot{width:7px;height:7px;border-radius:50%;background:var(--a);flex-shrink:0;animation:pl 2s ease-in-out infinite}"
         "@keyframes pl{0%,100%{opacity:1}50%{opacity:.25}}"
@@ -689,20 +819,21 @@ void handleWiFi(void)
         "function sMsg(m){var r=new XMLHttpRequest();r.open('GET','/&MSG='+encodeURIComponent(m)+'/&nc='+Math.random(),false);r.send();sts('Sent → '+m);}"
         "function sTxt(){var m=document.getElementById('mi').value.trim();if(m)sMsg(m);}"
         "function blk(){var r=new XMLHttpRequest();r.open('GET','/&MSG=BLANK/&',false);r.send();sts('Display blanked');}"
-        "function pWx(v){var r=new XMLHttpRequest();r.open('GET','/&WX='+encodeURIComponent(v)+'/&nc='+Math.random(),false);r.send();}"
-        "function sWx(){var v=document.getElementById('wi').value.trim();if(v){pWx(v);sts('Weather set');}}"
-        "function clWx(){document.getElementById('wi').value='';pWx('');sts('Weather cleared');}"
+        "function pWx(v,i){var r=new XMLHttpRequest();r.open('GET','/&WX='+encodeURIComponent(v)+'/&WI='+i+'/&nc='+Math.random(),false);r.send();}"
+        "function sWx(){var v=document.getElementById('wi').value.trim();var i=document.getElementById('wic').value;if(v){pWx(v,i);sts('Weather set');}}"
+        "function clWx(){document.getElementById('wi').value='';document.getElementById('wic').value='-1';pWx('','-1');sts('Weather cleared');}"
         "function selP(el,v){sp=v;document.querySelectorAll('.pb').forEach(b=>b.classList.remove('sel'));el.classList.add('sel');}"
         "function sndP(){if(sp)sMsg(sp);else sts('Select a preset first');}"
         "function apl(){var s=document.getElementById('sv').value;var b=document.getElementById('bv').value;"
-        "var c=document.getElementById('cp').value.substring(1);"
-        "var d=document.querySelector('.tb.dir.on');var m=document.querySelector('.tb.mode.on');"
+        "var d=document.querySelector('.tb.dir.on');var t=document.querySelector('.th.on');"
         "var z=document.querySelector('.tb.size.on');"
-        "var url='/&SP='+s+'/&BR='+b+'/&CO='+c;"
-        "if(d)url+='/&SD='+d.dataset.v;if(m)url+='/&CM='+m.dataset.v;if(z)url+='/&TS='+z.dataset.v;"
+        "var url='/&SP='+s+'/&BR='+b;"
+        "if(t)url+='/&TH='+t.dataset.v;"
+        "if(d)url+='/&SD='+d.dataset.v;if(z)url+='/&TS='+z.dataset.v;"
         "url+='/&nc='+Math.random();"
         "var r=new XMLHttpRequest();r.open('GET',url,false);r.send();sts('Controls applied');}"
         "function tog(cls,el){document.querySelectorAll('.tb.'+cls).forEach(b=>b.classList.remove('on'));el.classList.add('on');}"
+        "function togTh(el){document.querySelectorAll('.th').forEach(b=>b.classList.remove('on'));el.classList.add('on');}"
         "function upd(id,v){document.getElementById(id).innerText=v;}"
         "function sts(m){document.getElementById('st').innerText=m;}"
         "function chk(){var m=document.getElementById('fwmsg');m.innerHTML='Contacting GitHub&hellip;';sts('Checking&hellip;');"
@@ -744,6 +875,16 @@ void handleWiFi(void)
         "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#9925;</span>WEATHER ROW</div>"
         "<input type=\"text\" id=\"wi\" maxlength=\"60\" placeholder=\"e.g. 72F Sunny\""
         " onkeydown=\"if(event.key==='Enter')sWx()\">"
+        "<select id=\"wic\">"
+        "<option value=\"-1\">No icon</option>"
+        "<option value=\"0\">&#9728; Sun / Clear</option>"
+        "<option value=\"1\">&#9729; Cloud / Overcast</option>"
+        "<option value=\"2\">&#9925; Partly cloudy</option>"
+        "<option value=\"3\">&#127783; Rain</option>"
+        "<option value=\"4\">&#10052; Snow</option>"
+        "<option value=\"5\">&#9889; Storm</option>"
+        "<option value=\"6\">&#127787; Fog</option>"
+        "</select>"
         "<div class=\"row\">"
         "<button class=\"btn prim\" onclick=\"sWx()\">SET WEATHER</button>"
         "<button class=\"btn\" onclick=\"clWx()\">CLEAR</button>"
@@ -777,13 +918,22 @@ void handleWiFi(void)
         "<div class=\"row\"><span class=\"cl\">BRIGHTNESS</span>"
         "<input type=\"range\" id=\"bv\" min=\"5\" max=\"100\" value=\"60\" oninput=\"upd('bc',this.value)\">"
         "<span class=\"cv\" id=\"bc\">60</span></div>"
-        "<div class=\"row\"><span class=\"cl\">TEXT COLOR</span>"
-        "<input type=\"color\" id=\"cp\" value=\"#f0a500\">"
-        "<span class=\"cv\" style=\"min-width:auto;color:var(--muted);font-size:.72rem\">solid mode</span></div>"
-        "<div class=\"row\"><span class=\"cl\">COLOR MODE</span><div class=\"tg\">"
-        "<button class=\"tb mode on\" data-v=\"S\" onclick=\"tog('mode',this)\">SOLID</button>"
-        "<button class=\"tb mode\" data-v=\"R\" onclick=\"tog('mode',this)\">&#127752; RAINBOW</button>"
-        "</div></div>"
+        "<div class=\"row\"><span class=\"cl\">THEME</span></div>"
+        "<div class=\"thg\">"
+        "<button class=\"th on\" data-v=\"0\" onclick=\"togTh(this)\">"
+        "<i style=\"background:#f0a500\"></i><i style=\"background:#9a6a00\"></i>AMBER</button>"
+        "<button class=\"th\" data-v=\"1\" onclick=\"togTh(this)\">"
+        "<i style=\"background:#00ff41\"></i><i style=\"background:#00802a\"></i>MATRIX</button>"
+        "<button class=\"th\" data-v=\"2\" onclick=\"togTh(this)\">"
+        "<i style=\"background:#3fa9ff\"></i><i style=\"background:#0062a8\"></i>OCEAN</button>"
+        "<button class=\"th\" data-v=\"3\" onclick=\"togTh(this)\">"
+        "<i style=\"background:#ff6b35\"></i><i style=\"background:#c2185b\"></i>SUNSET</button>"
+        "<button class=\"th\" data-v=\"4\" onclick=\"togTh(this)\">"
+        "<i style=\"background:#ffffff\"></i><i style=\"background:#8a8a8a\"></i>MONO</button>"
+        "<button class=\"th\" data-v=\"5\" onclick=\"togTh(this)\">"
+        "<i style=\"background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f)\"></i>"
+        "<i style=\"background:linear-gradient(90deg,#f0f,#00f,#0ff,#0f0,#ff0,#f00)\"></i>RAINBOW</button>"
+        "</div>"
         "<div class=\"row\"><span class=\"cl\">DIRECTION</span><div class=\"tg\">"
         "<button class=\"tb dir on\" data-v=\"L\" onclick=\"tog('dir',this)\">&#8592; LEFT</button>"
         "<button class=\"tb dir\" data-v=\"R\" onclick=\"tog('dir',this)\">RIGHT &#8594;</button>"
@@ -825,6 +975,29 @@ void handleWiFi(void)
       }
       client.print("';}");
       client.print("var fc=document.getElementById('fwcur');if(fc)fc.innerText='v" FW_VERSION "';");
+
+      // Reflect the device's live settings in the controls
+      client.print("var wt=\"");
+      for (char *cp = weatherMsg; *cp; cp++) {
+        if (*cp == '"' || *cp == '\\') client.print("\\");
+        client.print(*cp);
+      }
+      client.print("\";var wf=document.getElementById('wi');if(wf)wf.value=wt;");
+      client.print("var ws=document.getElementById('wic');if(ws)ws.value='");
+      client.print((int)weatherIcon);
+      client.print("';");
+      client.print("var tb=document.querySelector('.th[data-v=\"");
+      client.print(themeIdx);
+      client.print("\"]');if(tb)togTh(tb);");
+      client.print("var zb=document.querySelector('.tb.size[data-v=\"");
+      client.print(textSize);
+      client.print("\"]');if(zb)tog('size',zb);");
+      client.print("var sv=document.getElementById('sv');if(sv){sv.value=");
+      client.print(scrollSpeed);
+      client.print(";upd('sc',sv.value);}");
+      client.print("var bv=document.getElementById('bv');if(bv){bv.value=");
+      client.print(brightnessPct);
+      client.print(";upd('bc',bv.value);}");
       client.print("</script>");
     }
 

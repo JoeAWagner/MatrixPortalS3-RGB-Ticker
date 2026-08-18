@@ -67,18 +67,39 @@ WEATHER_MINS    = 15             # refresh interval (minutes)
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
-# WMO weather codes -> short labels that fit a 64px row
+# Firmware icon ids (must match iconBits[] in the .ino)
+ICON_SUN, ICON_CLOUD, ICON_PARTLY, ICON_RAIN, ICON_SNOW, ICON_STORM, ICON_FOG = range(7)
+
+# WMO weather codes -> (short label that fits a 64px row, icon id)
 WMO = {
-    0: "Clear", 1: "Clear", 2: "Cloudy", 3: "Overcast",
-    45: "Fog", 48: "Fog",
-    51: "Drizzle", 53: "Drizzle", 55: "Drizzle",
-    56: "Freezing", 57: "Freezing",
-    61: "Rain", 63: "Rain", 65: "Hvy Rain",
-    66: "Icy Rain", 67: "Icy Rain",
-    71: "Snow", 73: "Snow", 75: "Hvy Snow", 77: "Snow",
-    80: "Showers", 81: "Showers", 82: "Showers",
-    85: "Snow", 86: "Snow",
-    95: "Storm", 96: "Storm", 99: "Storm",
+    0:  ("Clear",    ICON_SUN),
+    1:  ("Clear",    ICON_SUN),
+    2:  ("Cloudy",   ICON_PARTLY),
+    3:  ("Overcast", ICON_CLOUD),
+    45: ("Fog",      ICON_FOG),
+    48: ("Fog",      ICON_FOG),
+    51: ("Drizzle",  ICON_RAIN),
+    53: ("Drizzle",  ICON_RAIN),
+    55: ("Drizzle",  ICON_RAIN),
+    56: ("Freezing", ICON_SNOW),
+    57: ("Freezing", ICON_SNOW),
+    61: ("Rain",     ICON_RAIN),
+    63: ("Rain",     ICON_RAIN),
+    65: ("Hvy Rain", ICON_RAIN),
+    66: ("Icy Rain", ICON_SNOW),
+    67: ("Icy Rain", ICON_SNOW),
+    71: ("Snow",     ICON_SNOW),
+    73: ("Snow",     ICON_SNOW),
+    75: ("Hvy Snow", ICON_SNOW),
+    77: ("Snow",     ICON_SNOW),
+    80: ("Showers",  ICON_RAIN),
+    81: ("Showers",  ICON_RAIN),
+    82: ("Showers",  ICON_RAIN),
+    85: ("Snow",     ICON_SNOW),
+    86: ("Snow",     ICON_SNOW),
+    95: ("Storm",    ICON_STORM),
+    96: ("Storm",    ICON_STORM),
+    99: ("Storm",    ICON_STORM),
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -223,8 +244,8 @@ def _geocode(zip_code):
 
 def get_weather():
     """
-    Return a short weather string for the ticker's top row, e.g. '72F Sunny'.
-    Returns None if the lookup fails (the caller just keeps the previous value).
+    Return (text, icon_id) for the ticker's top row, e.g. ('72F Clear', 0).
+    Returns (None, None) if the lookup fails (caller keeps the previous value).
     """
     try:
         lat, lon, _name = _geocode(WEATHER_ZIP)
@@ -238,26 +259,27 @@ def get_weather():
         cur = r.json()["current"]
         temp = round(cur["temperature_2m"])
         unit = "F" if WEATHER_UNITS == "fahrenheit" else "C"
-        desc = WMO.get(cur["weather_code"], "")
-        return f"{temp}{unit} {desc}".strip()
+        desc, icon = WMO.get(cur["weather_code"], ("", -1))
+        return f"{temp}{unit} {desc}".strip(), icon
     except Exception as e:
         log.warning("Weather lookup failed: %s", e)
-        return None
+        return None, None
 
 
 # ── Ticker output ─────────────────────────────────────────────────────────────
 
-def send_ticker(value: str, param: str = "MSG"):
+def send_ticker(value: str, param: str = "MSG", icon: int | None = None):
     """
     Push a URL-encoded value to the ESP32 (param is MSG or WX), retrying a few
     times on a failed connection. Returns (ok, reason). Never raises for network
     problems, so an unplugged or unreachable device can't crash the sync loop.
     """
     encoded = urllib.parse.quote(value)
+    suffix  = f"/&WI={icon}" if icon is not None else ""
     reason  = "unknown error"
     for attempt in range(SEND_ATTEMPTS):
         nc  = random.randint(1, 99999)   # cache-buster, same as the web UI
-        url = f"http://{ESP32_IP}/&{param}={encoded}/&nc={nc}"
+        url = f"http://{ESP32_IP}/&{param}={encoded}{suffix}/&nc={nc}"
         try:
             resp = requests.get(url, auth=(ESP32_USER, ESP32_PASS), timeout=REQUEST_TIMEOUT)
             resp.raise_for_status()
@@ -295,13 +317,13 @@ def main() -> None:
 
             # Weather refresh (independent of the calendar cadence).
             if time.monotonic() >= weather_due:
-                wx = get_weather()
+                wx, icon = get_weather()
                 weather_due = time.monotonic() + WEATHER_MINS * 60
-                if wx and wx != last_weather:
-                    ok, reason = send_ticker(wx, param="WX")
+                if wx and (wx, icon) != last_weather:
+                    ok, reason = send_ticker(wx, param="WX", icon=icon)
                     if ok:
-                        last_weather = wx
-                        log.info("Weather: %s", wx)
+                        last_weather = (wx, icon)
+                        log.info("Weather: %s (icon %s)", wx, icon)
                     else:
                         log.warning("Weather push failed: %s", reason)
 
