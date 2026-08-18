@@ -6,12 +6,19 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $here
 
+# Single-instance guard: if a copy is already running, exit quietly.
+$mutex = New-Object System.Threading.Mutex($false, 'Local\MatrixPortalCalendarSync')
+$owned = $false
+try { $owned = $mutex.WaitOne(0) }
+catch [System.Threading.AbandonedMutexException] { $owned = $true }
+if (-not $owned) { exit 0 }
+
 # Load local credentials (gitignored). Any env vars already set still apply.
 $config = Join-Path $here 'sync.config.ps1'
 if (Test-Path $config) {
     . $config
 } else {
-    Write-Warning "sync.config.ps1 not found — relying on existing environment variables."
+    Write-Warning "sync.config.ps1 not found - relying on existing environment variables."
 }
 
 # Send the sync's own logging to a rotating file alongside this script.

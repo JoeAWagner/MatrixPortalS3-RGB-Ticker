@@ -107,23 +107,27 @@ as the device comes back.
 
 ### Run it automatically at logon (Windows)
 
-So the sync isn't a terminal you have to keep open, register it as a Scheduled
-Task that starts at logon and restarts itself if it stops:
+So the sync isn't a terminal you have to keep open:
 
 1. `Copy-Item sync.config.example.ps1 sync.config.ps1` and fill in your values
    (this file is gitignored). At minimum set `APPLE_APP_PASSWORD`.
-2. Register the task (no admin needed):
+2. Install the logon launcher (**no admin needed** — adds a shortcut to your
+   Startup folder):
    ```powershell
-   powershell -ExecutionPolicy Bypass -File install-task.ps1
+   powershell -ExecutionPolicy Bypass -File install-startup.ps1
    ```
 3. Start it now without waiting for a logon:
    ```powershell
-   Start-ScheduledTask -TaskName MatrixPortalCalendarSync
+   powershell -ExecutionPolicy Bypass -File run_sync.ps1
    ```
 
-It logs to `calendar_sync.log` (rotating, next to the scripts). Remove the task
-with `install-task.ps1 -Uninstall`. You can also just run `run_sync.ps1` directly
-in a terminal if you prefer to watch it live.
+It runs hidden, logs to `calendar_sync.log` (rotating, next to the scripts), and
+only ever runs one copy at a time. Remove it with `install-startup.ps1 -Uninstall`.
+
+**Prefer a real Scheduled Task?** `install-task.ps1` registers one (runs at logon,
+auto-restarts on failure) — but on many machines creating a task needs an
+**elevated** PowerShell ("Run as administrator"). If it can't, it now tells you so
+and points you back to `install-startup.ps1`.
 
 ### Is the Python bridge the right approach?
 

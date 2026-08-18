@@ -39,11 +39,23 @@ $settings = New-ScheduledTaskSettingsSet `
 $principal = New-ScheduledTaskPrincipal `
     -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $TaskName `
-    -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
-    -Description 'Syncs Apple Calendar Now/Up Next to the Matrix Portal LED ticker.' `
-    -Force | Out-Null
+try {
+    Register-ScheduledTask -TaskName $TaskName `
+        -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
+        -Description 'Syncs Apple Calendar Now/Up Next to the Matrix Portal LED ticker.' `
+        -Force -ErrorAction Stop | Out-Null
+} catch {
+    Write-Warning "Could not register the task: $($_.Exception.Message)"
+}
 
-Write-Host "Registered scheduled task '$TaskName' (runs at logon, restarts on failure)."
-Write-Host "Start it now with:  Start-ScheduledTask -TaskName $TaskName"
-Write-Host "Logs:               $here\calendar_sync.log"
+# Verify — registration can fail non-fatally, so don't trust it blindly.
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Write-Host "Registered scheduled task '$TaskName' (runs at logon, restarts on failure)."
+    Write-Host "Start it now with:  Start-ScheduledTask -TaskName $TaskName"
+    Write-Host "Logs:               $here\calendar_sync.log"
+} else {
+    Write-Warning "Task was NOT created. On this machine, Scheduled Tasks need an elevated"
+    Write-Warning "(Run as administrator) PowerShell. For a no-admin option, use instead:"
+    Write-Warning "  powershell -ExecutionPolicy Bypass -File install-startup.ps1"
+    exit 1
+}

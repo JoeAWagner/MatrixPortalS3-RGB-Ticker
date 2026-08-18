@@ -30,9 +30,13 @@ import datetime
 import random
 import logging
 import urllib.parse
+import warnings
 
 import requests
 import caldav
+
+# caldav's date_search still works fine; silence its deprecation notice.
+warnings.filterwarnings("ignore", message=r".*date_search.*")
 
 # ── Configuration (env vars win; edit the fallbacks if you prefer) ────────────
 
@@ -81,7 +85,7 @@ def connect() -> list:
     """Open a CalDAV session once and return the list of calendars to reuse."""
     client = caldav.DAVClient(url=CALDAV_URL, username=APPLE_ID, password=APP_PASS)
     calendars = client.principal().calendars()
-    log.info("Connected to iCloud — %d calendar(s)", len(calendars))
+    log.info("Connected to iCloud - %d calendar(s)", len(calendars))
     return calendars
 
 
@@ -141,9 +145,14 @@ def _title(summary: str) -> str:
 
 
 def _fmt_when(dt, now) -> str:
-    """Human-friendly start time: 'in 25 min', '2:00 PM', or 'Wed 9:00 AM'."""
+    """
+    Human-friendly start time: 'in 12 min', '2:00 PM', or 'Wed 9:00 AM'.
+    Relative ('in X min') is only used when the event is imminent, so the
+    message (and therefore the scroll) doesn't churn every minute for the
+    whole hour beforehand — a clock time stays stable until the event starts.
+    """
     mins = int((dt - now).total_seconds() // 60)
-    if 0 <= mins < 60:
+    if 0 <= mins < 15:
         return "in 1 min" if mins == 1 else f"in {mins} min"
 
     local = dt.astimezone()
@@ -183,7 +192,7 @@ def send_ticker(message: str):
         except requests.exceptions.HTTPError as e:
             # Reached the device but it refused us (e.g. 401) — retrying won't help.
             code = e.response.status_code if e.response is not None else "?"
-            return False, f"ticker rejected request (HTTP {code}) — check TICKER_USER/TICKER_PASS"
+            return False, f"ticker rejected request (HTTP {code}) - check TICKER_USER/TICKER_PASS"
         except requests.exceptions.ConnectionError:
             reason = f"cannot reach {ESP32_IP} (device off, or wrong IP?)"
         except requests.exceptions.Timeout:
@@ -198,7 +207,7 @@ def send_ticker(message: str):
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    log.info("Calendar sync started — polling every %ds", POLL_SECS)
+    log.info("Calendar sync started - polling every %ds", POLL_SECS)
     calendars    = None
     last_message = None
     online       = True     # ticker reachability, tracked only for tidy logging
@@ -221,7 +230,7 @@ def main() -> None:
                 if ok:
                     last_message = message
                     if not online:
-                        log.info("Ticker reachable again — updates resumed")
+                        log.info("Ticker reachable again - updates resumed")
                     online, last_reason = True, None
                     log.info("Sent: %r", message)
                 else:
@@ -233,7 +242,7 @@ def main() -> None:
                     online, last_reason = False, reason
 
         except caldav.lib.error.AuthorizationError:
-            log.critical("iCloud auth failed — check APPLE_ID and APPLE_APP_PASSWORD")
+            log.critical("iCloud auth failed - check APPLE_ID and APPLE_APP_PASSWORD")
             break   # wrong credentials won't fix themselves, stop retrying
 
         except Exception as e:
