@@ -52,6 +52,10 @@ ESP32_PASS = os.environ.get("TICKER_PASS", "YOUR_ESP32_PASSWORD")
 APPLE_ID   = os.environ.get("APPLE_ID",           "you@icloud.com")
 APP_PASS   = os.environ.get("APPLE_APP_PASSWORD", "xxxx-xxxx-xxxx-xxxx")
 
+# Optional: limit which calendars are checked, e.g. CALENDARS="Work,Home".
+# Empty means use every calendar on the account.
+ONLY_CALENDARS = os.environ.get("CALENDARS", "").strip()
+
 FREE_MSG        = "I am Free"   # shown as the "now" part when no meeting is active
 POLL_SECS       = 60           # how often to check (seconds)
 LOOKAHEAD_HOURS = 12           # how far ahead "Up Next" looks
@@ -146,7 +150,21 @@ def connect() -> list:
     """Open a CalDAV session once and return the list of calendars to reuse."""
     client = caldav.DAVClient(url=CALDAV_URL, username=APPLE_ID, password=APP_PASS)
     calendars = client.principal().calendars()
-    log.info("Connected to iCloud - %d calendar(s)", len(calendars))
+
+    # Optional whitelist: CALENDARS="Work,Personal". Fewer calendars means
+    # fewer CalDAV requests per poll, which also reduces rate-limit risk.
+    if ONLY_CALENDARS:
+        wanted = {n.strip().lower() for n in ONLY_CALENDARS.split(",") if n.strip()}
+        picked = [c for c in calendars
+                  if str(getattr(c, "name", "") or "").lower() in wanted]
+        if picked:
+            calendars = picked
+        else:
+            log.warning("CALENDARS=%r matched nothing; using all calendars",
+                        ONLY_CALENDARS)
+
+    names = ", ".join(str(getattr(c, "name", "?")) for c in calendars)
+    log.info("Connected to iCloud - %d calendar(s): %s", len(calendars), names)
     return calendars
 
 
@@ -160,16 +178,29 @@ def _as_utc(dt):
 
 
 def collect_events(calendars, now):
-    """Return timed events near 'now' as a list of (start, end, summary) tuples."""
+    """
+    Return (events, failures) where events is a list of (start, end, summary)
+    tuples and failures counts calendars that did not answer.
+
+    The distinction matters: a calendar that fails to respond is NOT the same
+    as a calendar with nothing on it. If we treated a failure as "empty" we
+    could report "I am Free" while a meeting is actually in progress.
+    """
     window_start = now - datetime.timedelta(hours=8)   # catch long meetings
     window_end   = now + datetime.timedelta(hours=LOOKAHEAD_HOURS)
 
-    events = []
+    events   = []
+    failures = 0
     for calendar in calendars:
         try:
             found = calendar.date_search(start=window_start, end=window_end, expand=True)
-        except Exception:
-            # Reminders and other non-event calendars raise here — skip them
+        except caldav.lib.error.ReportError:
+            # Reminders/contacts collections don't support event reports.
+            # That's a genuine "nothing here", not a failure.
+            continue
+        except Exception as e:
+            failures += 1
+            log.debug("Calendar query failed (%s): %s", getattr(calendar, "name", "?"), e)
             continue
 
         for event in found:
@@ -189,7 +220,7 @@ def collect_events(calendars, now):
             except AttributeError:
                 continue   # event missing expected fields
 
-    return events
+    return events, failures
 
 
 def now_and_next(events, now):
@@ -325,6 +356,7 @@ def main() -> None:
     last_reason  = None
     last_weather = None
     weather_due  = 0.0      # monotonic deadline for the next weather refresh
+    stale        = False    # true while some calendar is failing to respond
 
     calendar_due = 0.0      # set ahead when iCloud rate-limits us
 
@@ -355,7 +387,24 @@ def main() -> None:
                 calendars = connect()
 
             now = datetime.datetime.now(datetime.timezone.utc)
-            now_ev, next_ev = now_and_next(collect_events(calendars, now), now)
+            events, failures = collect_events(calendars, now)
+            now_ev, next_ev = now_and_next(events, now)
+
+            # If some calendar didn't answer we have an incomplete picture.
+            # Saying "I am Free" then risks blanking a real meeting, so hold
+            # the last known status until every calendar reports again.
+            if failures and now_ev is None:
+                if not stale:
+                    log.warning("%d of %d calendars did not respond - holding "
+                                "last status instead of showing '%s'",
+                                failures, len(calendars), FREE_MSG)
+                stale = True
+                time.sleep(POLL_SECS)
+                continue
+            if stale and not failures:
+                log.info("All calendars responding again")
+            stale = False
+
             message = compose(now_ev, next_ev, now)
 
             # Only push when the text changes. Because last_message is updated

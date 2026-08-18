@@ -71,6 +71,7 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&MSG=` | Set scrolling text (URL-encoded; `BLANK` clears) | `/&MSG=Hello%20World/&` |
 | `/&SP=`  | Scroll step interval, ms (5–200; lower = faster) | `/&SP=25` |
 | `/&TS=`  | Text size 1–4 (S/M/L/XL; 4 = full 32 px height) | `/&TS=3` |
+| `/&LG=`  | Line gap 0–6 (blank pixels between rows) | `/&LG=2` |
 | `/&BR=`  | Brightness percent (0–100) | `/&BR=60` |
 | `/&CO=`  | Flat color override, `RRGGBB` hex (overrides the theme) | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |
@@ -103,6 +104,21 @@ It sends the calendar rows via `/&MSG=` (separated by `|`) and the weather via
 `/&WX=`. Weather comes from [Open-Meteo](https://open-meteo.com) (free, no API
 key) for `WEATHER_ZIP` — set that env var to change location, and
 `WEATHER_UNITS` in the script to switch to Celsius.
+
+**Only the calendars you care about.** By default every calendar on the account
+is polled, which on a busy iCloud account can mean a lot of CalDAV requests each
+minute (and Apple rate-limits). The startup log lists the calendar names it
+found; set `CALENDARS` to just the ones that should drive your status:
+
+```powershell
+$env:CALENDARS = "Calendar,Work,Home"
+```
+
+**"I am Free" is only shown when every calendar answers.** A calendar that fails
+to respond is not treated as an empty one — otherwise a transient iCloud error
+could blank out a meeting that is actually in progress. When a calendar doesn't
+answer, the sync holds the last known status and logs it, then resumes once all
+calendars report again.
 
 ```bash
 pip install caldav requests

@@ -29,7 +29,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.4.0"
+#define FW_VERSION   "1.5.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -116,9 +116,22 @@ static inline int16_t glyphH(void) { return 8 * textSize; }             // cell 
 //   row 0: weather (if set)
 //   rows below: the message, split on '|' into separate lines
 #define MAX_LINES     4
-#define LINE_GAP      0            // extra pixels between rows
+#define LINE_GAP_MAX  6
 #define SCROLL_PAD   12            // blank pixels between scroll repeats
 #define END_PAUSE_MS 1200          // pause at the start of a scroll cycle
+
+uint8_t lineGap = 2;               // blank pixels between rows (/&LG=)
+
+// Height of one row including its spacing, and how many rows fit:
+// n rows occupy n*glyphH + (n-1)*gap pixels.
+static inline int16_t rowH(void)   { return glyphH() + lineGap; }
+static inline uint8_t rowCap(void)
+{
+  int16_t n = (PANEL_HEIGHT + lineGap) / rowH();
+  if (n < 1) n = 1;
+  if (n > MAX_LINES) n = MAX_LINES;
+  return (uint8_t)n;
+}
 
 // ============================================================
 //  WIFI
@@ -308,19 +321,41 @@ static void initLine(Line &ln, const char *text, uint8_t role, int8_t icon)
 // Rebuild the row list from the weather string + current message.
 // The message is split on '|' so the sync can send "NOW: ... | UP NEXT: ..."
 // and get two stacked rows.
+// Count the non-empty '|'-separated segments in curMessage.
+static uint8_t countSegments(void)
+{
+  uint8_t n = 0;
+  const char *p = curMessage;
+  while (*p) {
+    const char *bar = strchr(p, '|');
+    size_t len = bar ? (size_t)(bar - p) : strlen(p);
+    char probe[BUF_SIZE];
+    if (len > sizeof(probe) - 1) len = sizeof(probe) - 1;
+    memcpy(probe, p, len);
+    probe[len] = '\0';
+    char trimmed[BUF_SIZE];
+    trimInto(trimmed, probe, sizeof(trimmed));
+    if (trimmed[0]) n++;
+    if (!bar) break;
+    p = bar + 1;
+  }
+  return n;
+}
+
 void layoutLines(void)
 {
   numLines = 0;
-  uint8_t rowCap = PANEL_HEIGHT / (glyphH() + LINE_GAP);
-  if (rowCap > MAX_LINES) rowCap = MAX_LINES;
+  uint8_t cap = rowCap();
 
-  if (weatherMsg[0] && numLines < rowCap)
+  // At larger text sizes only a row or two fit. The status message matters
+  // more than the weather, so weather only gets a row if one is left over.
+  if (weatherMsg[0] && countSegments() < cap)
     initLine(lines[numLines++], weatherMsg, 0, weatherIcon);
 
   // Walk curMessage, splitting on '|'
   uint8_t msgRow = 0;
   const char *p = curMessage;
-  while (*p && numLines < rowCap) {
+  while (*p && numLines < cap) {
     const char *bar = strchr(p, '|');
     char part[BUF_SIZE];
     size_t n = bar ? (size_t)(bar - p) : strlen(p);
@@ -381,12 +416,12 @@ void renderFrame(void)
   matrix.setTextWrap(false);
   matrix.setTextSize(textSize);
 
-  int16_t rowH  = glyphH() + LINE_GAP;
-  int16_t total = numLines * rowH - LINE_GAP;
+  int16_t h     = rowH();
+  int16_t total = numLines ? numLines * h - lineGap : 0;
   int16_t y     = (PANEL_HEIGHT - total) / 2;   // vertically center the block
   if (y < 0) y = 0;
 
-  for (uint8_t i = 0; i < numLines; i++, y += rowH)
+  for (uint8_t i = 0; i < numLines; i++, y += h)
     drawLine(lines[i], y);
 
   matrix.show();
@@ -542,6 +577,13 @@ void getData(const char *buf)
   if (p) {
     uint8_t ts = constrain((int16_t)atoi(p + 5), TEXT_SIZE_MIN, TEXT_SIZE_MAX);
     if (ts != textSize) { textSize = ts; layoutLines(); }   // geometry changed
+  }
+
+  // Line spacing: /&LG=0..6 blank pixels between rows
+  p = strstr(buf, "/&LG=");
+  if (p) {
+    uint8_t lg = constrain((int16_t)atoi(p + 5), 0, LINE_GAP_MAX);
+    if (lg != lineGap) { lineGap = lg; layoutLines(); }
   }
 
   // Weather line: /&WX=<text>/&   (empty value clears it)
@@ -834,7 +876,8 @@ void handleWiFi(void)
         "function apl(){var s=document.getElementById('sv').value;var b=document.getElementById('bv').value;"
         "var d=document.querySelector('.tb.dir.on');var t=document.querySelector('.th.on');"
         "var z=document.querySelector('.tb.size.on');"
-        "var url='/&SP='+s+'/&BR='+b;"
+        "var g=document.getElementById('lg').value;"
+        "var url='/&SP='+s+'/&BR='+b+'/&LG='+g;"
         "if(t)url+='/&TH='+t.dataset.v;"
         "if(d)url+='/&SD='+d.dataset.v;if(z)url+='/&TS='+z.dataset.v;"
         "url+='/&nc='+Math.random();"
@@ -916,6 +959,9 @@ void handleWiFi(void)
         "<div class=\"row\"><span class=\"cl\">SPEED</span>"
         "<input type=\"range\" id=\"sv\" min=\"5\" max=\"100\" value=\"25\" oninput=\"upd('sc',this.value)\">"
         "<span class=\"cv\" id=\"sc\">25</span></div>"
+        "<div class=\"row\"><span class=\"cl\">LINE GAP</span>"
+        "<input type=\"range\" id=\"lg\" min=\"0\" max=\"6\" value=\"2\" oninput=\"upd('lgc',this.value)\">"
+        "<span class=\"cv\" id=\"lgc\">2</span></div>"
         "<div class=\"row\"><span class=\"cl\">TEXT SIZE</span><div class=\"tg\">"
         "<button class=\"tb size on\" data-v=\"1\" onclick=\"tog('size',this)\">S</button>"
         "<button class=\"tb size\" data-v=\"2\" onclick=\"tog('size',this)\">M</button>"
@@ -1005,6 +1051,9 @@ void handleWiFi(void)
       client.print("var bv=document.getElementById('bv');if(bv){bv.value=");
       client.print(brightnessPct);
       client.print(";upd('bc',bv.value);}");
+      client.print("var lv=document.getElementById('lg');if(lv){lv.value=");
+      client.print(lineGap);
+      client.print(";upd('lgc',lv.value);}");
       client.print("</script>");
     }
 
