@@ -10,3 +10,8 @@ $env:TICKER_PASS = "your_web_ui_password"        # web-UI password (from arduino
 
 $env:APPLE_ID           = "you@icloud.com"       # your Apple ID / iCloud email
 $env:APPLE_APP_PASSWORD = "xxxx-xxxx-xxxx-xxxx"  # app-specific password (appleid.apple.com)
+
+# Optional: only poll these calendars (comma-separated). The sync logs the
+# calendar names it finds at startup. Fewer calendars = fewer CalDAV requests
+# per minute = less chance of hitting Apple's rate limit. Omit to poll all.
+# $env:CALENDARS = "Calendar,Work,Home"

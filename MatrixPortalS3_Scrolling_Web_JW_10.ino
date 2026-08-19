@@ -17,6 +17,9 @@
 #include <WiFiServer.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
+#include <Preferences.h>
+#include <time.h>
 #include <Adafruit_Protomatter.h>
 
 // Credentials live in a separate, gitignored file. Copy
@@ -29,9 +32,21 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.7.0"
+#define FW_VERSION   "1.8.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
+
+// ============================================================
+//  NETWORK NAME / TIME
+// ============================================================
+// Reachable as http://ticker.local/ so a changed DHCP lease doesn't matter.
+#define HOSTNAME  "ticker"
+
+// POSIX timezone for the clock. This is US Eastern with automatic DST;
+// see https://github.com/nayarsystems/posix_tz_db for other zones.
+#define TZ_INFO   "EST5EDT,M3.2.0,M11.1.0"
+#define NTP_1     "pool.ntp.org"
+#define NTP_2     "time.nist.gov"
 
 // ============================================================
 //  DEBUG
@@ -130,6 +145,19 @@ static inline int16_t glyphH(void) { return 8 * textSize; }             // cell 
 uint8_t  lineGap  = 4;             // blank pixels between rows (/&LG=)
 uint16_t parkMs   = 2500;          // how long a row sits still before scrolling (/&PK=)
 bool     stickyLabels = true;      // pin "NOW:" / "NEXT:" labels (/&SK=)
+
+// Clock: 0 = off, 1 = always show a clock row, 2 = only when the message
+// has gone stale (the sync stopped, so the PC is probably off).
+uint8_t  clockMode  = 2;           // (/&CL=)
+#define  STALE_MINS 20             // no message for this long => "stale"
+
+// Night dimming - an RGB panel at daytime brightness is blinding at 2am.
+bool     nightDim      = true;     // (/&ND=)
+uint8_t  nightBrightPct = 8;       // (/&NB=)
+uint8_t  nightStartHr  = 22;       // (/&NS=)
+uint8_t  nightEndHr    = 7;        // (/&NE=)
+
+uint32_t lastMsgMs = 0;            // when the last /&MSG= arrived
 #define LABEL_MAX_CHARS 8          // longest label we'll pin (keeps the window usable)
 
 // Height of one row including its spacing, and how many rows fit:
@@ -240,10 +268,133 @@ uint8_t  numLines = 0;
 uint32_t lastStep = 0;
 
 // ============================================================
+//  TIME / CLOCK
+// ============================================================
+// True once NTP has actually set the clock (epoch past 2023-11).
+bool timeValid(void)
+{
+  return time(nullptr) > 1700000000;
+}
+
+void formatClock(char *out, size_t n)
+{
+  struct tm t;
+  if (!getLocalTime(&t, 0)) { out[0] = '\0'; return; }
+  int h = t.tm_hour % 12; if (!h) h = 12;
+  snprintf(out, n, "%d:%02d %s", h, t.tm_min, t.tm_hour < 12 ? "AM" : "PM");
+}
+
+void formatDate(char *out, size_t n)
+{
+  struct tm t;
+  if (!getLocalTime(&t, 0)) { out[0] = '\0'; return; }
+  strftime(out, n, "%a %b %d", &t);
+}
+
+// Inside the night window? Handles windows that wrap past midnight.
+bool isNight(void)
+{
+  if (!nightDim || !timeValid()) return false;
+  if (nightStartHr == nightEndHr) return false;
+  struct tm t;
+  if (!getLocalTime(&t, 0)) return false;
+  int h = t.tm_hour;
+  return (nightStartHr < nightEndHr) ? (h >= nightStartHr && h < nightEndHr)
+                                     : (h >= nightStartHr || h < nightEndHr);
+}
+
+// The message is stale when the sync has stopped pushing updates. Only
+// meaningful once the clock is valid, and only used to decide whether the
+// panel should fall back to showing the time.
+bool messageIsStale(void)
+{
+  return (millis() - lastMsgMs) > (uint32_t)STALE_MINS * 60000UL;
+}
+
+// ============================================================
+//  SETTINGS PERSISTENCE (NVS)
+// ============================================================
+// Display settings survive a reboot. Writes are debounced: dragging a
+// slider marks the settings dirty and one write lands a few seconds later,
+// rather than hammering flash on every pixel of slider travel.
+Preferences prefs;
+bool     settingsDirty = false;
+uint32_t settingsDueMs = 0;
+#define  SETTINGS_DEBOUNCE_MS 4000
+
+void markSettingsDirty(void)
+{
+  settingsDirty = true;
+  settingsDueMs = millis() + SETTINGS_DEBOUNCE_MS;
+}
+
+void saveSettings(void)
+{
+  prefs.begin("ticker", false);
+  prefs.putUShort("sp", scrollSpeed);
+  prefs.putUChar ("br", brightnessPct);
+  prefs.putUChar ("lg", lineGap);
+  prefs.putUShort("pk", parkMs);
+  prefs.putUChar ("ts", textSize);
+  prefs.putUChar ("th", themeIdx);
+  prefs.putBool  ("sk", stickyLabels);
+  prefs.putUChar ("sd", (uint8_t)scrollDir);
+  prefs.putUChar ("cm", (uint8_t)colorMode);
+  prefs.putBool  ("cc", customColor);
+  prefs.putUInt  ("co", customColorRGB);
+  prefs.putUChar ("cl", clockMode);
+  prefs.putBool  ("nd", nightDim);
+  prefs.putUChar ("nb", nightBrightPct);
+  prefs.putUChar ("ns", nightStartHr);
+  prefs.putUChar ("ne", nightEndHr);
+  prefs.end();
+  settingsDirty = false;
+  PRINTS("\nSettings saved to NVS");
+}
+
+void loadSettings(void)
+{
+  prefs.begin("ticker", true);          // read-only; missing keys keep defaults
+  scrollSpeed    = prefs.getUShort("sp", scrollSpeed);
+  brightnessPct  = prefs.getUChar ("br", brightnessPct);
+  lineGap        = prefs.getUChar ("lg", lineGap);
+  parkMs         = prefs.getUShort("pk", parkMs);
+  textSize       = prefs.getUChar ("ts", textSize);
+  themeIdx       = prefs.getUChar ("th", themeIdx);
+  stickyLabels   = prefs.getBool  ("sk", stickyLabels);
+  scrollDir      = (ScrollDir)prefs.getUChar("sd", (uint8_t)scrollDir);
+  colorMode      = (ColorMode)prefs.getUChar("cm", (uint8_t)colorMode);
+  customColor    = prefs.getBool  ("cc", customColor);
+  customColorRGB = prefs.getUInt  ("co", customColorRGB);
+  clockMode      = prefs.getUChar ("cl", clockMode);
+  nightDim       = prefs.getBool  ("nd", nightDim);
+  nightBrightPct = prefs.getUChar ("nb", nightBrightPct);
+  nightStartHr   = prefs.getUChar ("ns", nightStartHr);
+  nightEndHr     = prefs.getUChar ("ne", nightEndHr);
+  prefs.end();
+
+  // Clamp everything: NVS could hold values from an older build.
+  scrollSpeed    = constrain(scrollSpeed, 5, 200);
+  brightnessPct  = constrain(brightnessPct, 1, 100);
+  lineGap        = constrain(lineGap, 0, LINE_GAP_MAX);
+  parkMs         = constrain(parkMs, 0, PARK_MS_MAX);
+  textSize       = constrain(textSize, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
+  if (themeIdx >= NUM_THEMES) themeIdx = 0;
+  if (clockMode > 2)          clockMode = 2;
+  nightBrightPct = constrain(nightBrightPct, 1, 100);
+  if (nightStartHr > 23) nightStartHr = 22;
+  if (nightEndHr   > 23) nightEndHr   = 7;
+  PRINTS("\nSettings loaded from NVS");
+}
+
+// ============================================================
 //  COLOR HELPERS
 // ============================================================
 // Scale an 8-bit channel by the global brightness percentage.
-static inline uint8_t dim(uint8_t v) { return (uint16_t)v * brightnessPct / 100; }
+// Brightness actually used for the current frame. isNight() consults the RTC,
+// which is far too slow to call per pixel, so renderFrame() caches it here.
+uint8_t curBright = 30;
+static inline uint8_t dim(uint8_t v) { return (uint16_t)v * curBright / 100; }
 
 // HSV -> RGB565, with value already scaled by brightness.
 uint16_t hsv565(uint16_t hue, uint8_t sat, uint8_t val)
@@ -394,10 +545,36 @@ void layoutLines(void)
   numLines = 0;
   uint8_t cap = rowCap();
 
+  // Clock rows. In mode 2 the clock only appears once the message has gone
+  // stale - i.e. the sync stopped pushing, so the PC is probably off and a
+  // frozen "NOW: Lunch" at 9pm would be worse than showing the time.
+  char clkTime[24] = "", clkDate[24] = "";
+  bool haveTime = timeValid();
+  bool takeOver = haveTime && clockMode == 2 && messageIsStale();
+  bool clockRow = haveTime && clockMode == 1;
+  if (takeOver || clockRow) {
+    formatClock(clkTime, sizeof(clkTime));
+    if (takeOver) formatDate(clkDate, sizeof(clkDate));
+  }
+
+  // How many rows the message side wants, so weather can claim a leftover row.
+  uint8_t wantRows;
+  if (takeOver) wantRows = (clkTime[0] ? 1 : 0) + (clkDate[0] ? 1 : 0);
+  else          wantRows = countSegments() + (clkTime[0] ? 1 : 0);
+
   // At larger text sizes only a row or two fit. The status message matters
   // more than the weather, so weather only gets a row if one is left over.
-  if (weatherMsg[0] && countSegments() < cap)
+  if (weatherMsg[0] && wantRows < cap)
     initLine(lines[numLines++], weatherMsg, 0, weatherIcon);
+
+  if (takeOver) {
+    if (clkTime[0] && numLines < cap) initLine(lines[numLines++], clkTime, 1, -1);
+    if (clkDate[0] && numLines < cap) initLine(lines[numLines++], clkDate, 2, -1);
+    return;                       // clock replaces the stale message entirely
+  }
+
+  if (clkTime[0] && numLines < cap)
+    initLine(lines[numLines++], clkTime, 1, -1);
 
   // Walk curMessage, splitting on '|'
   uint8_t msgRow = 0;
@@ -469,6 +646,8 @@ static void drawLine(const Line &ln, int16_t y)
 
 void renderFrame(void)
 {
+  curBright = isNight() ? nightBrightPct : brightnessPct;
+
   matrix.fillScreen(0);
   matrix.setTextWrap(false);
   matrix.setTextSize(textSize);
@@ -619,21 +798,23 @@ void getData(const char *buf)
     if (end) {
       decodeMessage(p, end);
       newMessageAvailable = (strlen(newMessage) != 0);
+      lastMsgMs = millis();          // liveness stamp for the clock fallback
       PRINT("\nNew Msg: ", newMessage);
     }
   }
 
   p = strstr(buf, "/&SD=");
-  if (p) { p += 5; scrollDir = (*p == 'R') ? DIR_RIGHT : DIR_LEFT; }
+  if (p) { p += 5; scrollDir = (*p == 'R') ? DIR_RIGHT : DIR_LEFT; markSettingsDirty(); }
 
   p = strstr(buf, "/&SP=");
-  if (p) { scrollSpeed = constrain((int16_t)atoi(p + 5), 5, 200); }
+  if (p) { scrollSpeed = constrain((int16_t)atoi(p + 5), 5, 200); markSettingsDirty(); }
 
   // Text size: /&TS=1..4  (GFX classic font scale)
   p = strstr(buf, "/&TS=");
   if (p) {
     uint8_t ts = constrain((int16_t)atoi(p + 5), TEXT_SIZE_MIN, TEXT_SIZE_MAX);
-    if (ts != textSize) { textSize = ts; layoutLines(); }   // geometry changed
+    if (ts != textSize) { textSize = ts; layoutLines(); }
+    markSettingsDirty();   // geometry changed
   }
 
   // Line spacing: /&LG=0..6 blank pixels between rows
@@ -641,18 +822,41 @@ void getData(const char *buf)
   if (p) {
     uint8_t lg = constrain((int16_t)atoi(p + 5), 0, LINE_GAP_MAX);
     if (lg != lineGap) { lineGap = lg; layoutLines(); }
+    markSettingsDirty();
   }
 
   // Park time: /&PK=0..10000 ms a row sits still before scrolling again
   p = strstr(buf, "/&PK=");
-  if (p) parkMs = constrain((int32_t)atol(p + 5), 0, PARK_MS_MAX);
+  if (p) { parkMs = constrain((int32_t)atol(p + 5), 0, PARK_MS_MAX); markSettingsDirty(); }
 
   // Sticky labels: /&SK=1 pins "NOW:"/"NEXT:", /&SK=0 scrolls the whole row
   p = strstr(buf, "/&SK=");
   if (p) {
     bool sk = (*(p + 5) == '1');
     if (sk != stickyLabels) { stickyLabels = sk; layoutLines(); }
+    markSettingsDirty();
   }
+
+  // Clock: /&CL=0 off, 1 always a row, 2 only when the message goes stale
+  p = strstr(buf, "/&CL=");
+  if (p) {
+    uint8_t cl = constrain((int16_t)atoi(p + 5), 0, 2);
+    if (cl != clockMode) { clockMode = cl; layoutLines(); }
+    markSettingsDirty();
+  }
+
+  // Night dimming: /&ND=0|1, /&NB=level, /&NS=start hour, /&NE=end hour
+  p = strstr(buf, "/&ND=");
+  if (p) { nightDim = (*(p + 5) == '1'); markSettingsDirty(); }
+
+  p = strstr(buf, "/&NB=");
+  if (p) { nightBrightPct = constrain((int16_t)atoi(p + 5), 1, 100); markSettingsDirty(); }
+
+  p = strstr(buf, "/&NS=");
+  if (p) { nightStartHr = constrain((int16_t)atoi(p + 5), 0, 23); markSettingsDirty(); }
+
+  p = strstr(buf, "/&NE=");
+  if (p) { nightEndHr = constrain((int16_t)atoi(p + 5), 0, 23); markSettingsDirty(); }
 
   // Weather line: /&WX=<text>/&   (empty value clears it)
   p = strstr(buf, "/&WX=");
@@ -670,7 +874,7 @@ void getData(const char *buf)
   }
 
   p = strstr(buf, "/&BR=");
-  if (p) { brightnessPct = constrain((int16_t)atoi(p + 5), 0, 100); }
+  if (p) { brightnessPct = constrain((int16_t)atoi(p + 5), 1, 100); markSettingsDirty(); }
 
   // Color theme: /&TH=0..N  (see the themes[] table)
   p = strstr(buf, "/&TH=");
@@ -680,6 +884,7 @@ void getData(const char *buf)
       themeIdx    = (uint8_t)t;
       customColor = false;               // theme wins over any /&CO= override
       colorMode   = themes[themeIdx].rainbow ? CM_RAINBOW : CM_SOLID;
+      markSettingsDirty();
     }
   }
 
@@ -694,6 +899,7 @@ void getData(const char *buf)
                         (uint32_t)((htoi(p[4]) << 4) | htoi(p[5]));
       customColor = true;
       colorMode   = CM_SOLID;
+      markSettingsDirty();
     }
   }
 
@@ -926,6 +1132,7 @@ void handleWiFi(void)
         ".th i{display:block;width:26px;height:4px;border-radius:2px}"
         ".th.on{border-color:var(--a);color:var(--a);background:var(--ag);box-shadow:0 0 8px var(--ag)}"
         ".th:hover{border-color:var(--ad);color:var(--a)}"
+        "input[type=number]{width:52px;background:#000;border:1px solid var(--ad);color:var(--a);font-family:'Share Tech Mono',monospace;font-size:.8rem;padding:6px 4px;border-radius:4px;text-align:center;outline:none}"
         "select{width:100%;background:#000;border:1px solid var(--ad);color:var(--a);font-family:'Share Tech Mono',monospace;font-size:.85rem;padding:8px 10px;border-radius:4px;outline:none;margin-top:10px}"
         ".sbar{background:#000;border:1px solid var(--br);border-radius:4px;padding:9px 13px;font-size:.75rem;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:8px}"
         ".dot{width:7px;height:7px;border-radius:50%;background:var(--a);flex-shrink:0;animation:pl 2s ease-in-out infinite}"
@@ -946,8 +1153,13 @@ void handleWiFi(void)
         "var z=document.querySelector('.tb.size.on');"
         "var g=document.getElementById('lg').value;var pk=document.getElementById('pk').value;"
         "var k=document.querySelector('.tb.stk.on');"
+        "var cl=document.querySelector('.tb.clk.on');var nd=document.querySelector('.tb.nit.on');"
+        "var nb=document.getElementById('nb').value;"
+        "var ns=document.getElementById('ns').value;var ne=document.getElementById('ne').value;"
         "var url='/&SP='+s+'/&BR='+b+'/&LG='+g+'/&PK='+pk;"
         "if(t)url+='/&TH='+t.dataset.v;if(k)url+='/&SK='+k.dataset.v;"
+        "if(cl)url+='/&CL='+cl.dataset.v;if(nd)url+='/&ND='+nd.dataset.v;"
+        "url+='/&NB='+nb+'/&NS='+ns+'/&NE='+ne;"
         "if(d)url+='/&SD='+d.dataset.v;if(z)url+='/&TS='+z.dataset.v;"
         "url+='/&nc='+Math.random();"
         "var r=new XMLHttpRequest();r.open('GET',url,false);r.send();sts('Controls applied');}"
@@ -1039,6 +1251,23 @@ void handleWiFi(void)
         "<button class=\"tb stk on\" data-v=\"1\" onclick=\"tog('stk',this)\">PINNED</button>"
         "<button class=\"tb stk\" data-v=\"0\" onclick=\"tog('stk',this)\">SCROLL ALL</button>"
         "</div></div>"
+        "<div class=\"row\"><span class=\"cl\">CLOCK</span><div class=\"tg\">"
+        "<button class=\"tb clk\" data-v=\"0\" onclick=\"tog('clk',this)\">OFF</button>"
+        "<button class=\"tb clk\" data-v=\"1\" onclick=\"tog('clk',this)\">ALWAYS</button>"
+        "<button class=\"tb clk on\" data-v=\"2\" onclick=\"tog('clk',this)\">IF IDLE</button>"
+        "</div></div>"
+        "<div class=\"row\"><span class=\"cl\">NIGHT DIM</span><div class=\"tg\">"
+        "<button class=\"tb nit on\" data-v=\"1\" onclick=\"tog('nit',this)\">ON</button>"
+        "<button class=\"tb nit\" data-v=\"0\" onclick=\"tog('nit',this)\">OFF</button>"
+        "</div></div>"
+        "<div class=\"row\"><span class=\"cl\">NIGHT LEVEL</span>"
+        "<input type=\"range\" id=\"nb\" min=\"1\" max=\"100\" value=\"8\" oninput=\"upd('nbc',this.value)\">"
+        "<span class=\"cv\" id=\"nbc\">8</span></div>"
+        "<div class=\"row\"><span class=\"cl\">NIGHT HOURS</span>"
+        "<input type=\"number\" id=\"ns\" min=\"0\" max=\"23\" value=\"22\">"
+        "<span style=\"color:var(--muted);font-size:.75rem\">to</span>"
+        "<input type=\"number\" id=\"ne\" min=\"0\" max=\"23\" value=\"7\">"
+        "<span style=\"color:var(--muted);font-size:.72rem\">(24h)</span></div>"
         "<div class=\"row\"><span class=\"cl\">TEXT SIZE</span><div class=\"tg\">"
         "<button class=\"tb size on\" data-v=\"1\" onclick=\"tog('size',this)\">S</button>"
         "<button class=\"tb size\" data-v=\"2\" onclick=\"tog('size',this)\">M</button>"
@@ -1081,7 +1310,8 @@ void handleWiFi(void)
         "<span class=\"cv\" id=\"fwcur\" style=\"min-width:auto\">&#8230;</span>"
         "<button class=\"btn\" onclick=\"chk()\">CHECK FOR UPDATES</button></div>"
         "<div id=\"fwmsg\" style=\"font-size:.78rem;color:var(--muted);margin-top:12px;line-height:1.5\">"
-        "Compares this device against the latest version on GitHub.</div></div>"
+        "Compares this device against the latest version on GitHub.<br>"
+        "Also reachable at <b>http://" HOSTNAME ".local/</b></div></div>"
 
         "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#128274;</span>ACTIVE USERS</div>"
         "<div id=\"ulist\" style=\"font-size:.8rem;color:var(--muted);line-height:2\">Loading...</div></div>"
@@ -1143,6 +1373,21 @@ void handleWiFi(void)
       client.print("var kb=document.querySelector('.tb.stk[data-v=\"");
       client.print(stickyLabels ? 1 : 0);
       client.print("\"]');if(kb)tog('stk',kb);");
+      client.print("var cb=document.querySelector('.tb.clk[data-v=\"");
+      client.print(clockMode);
+      client.print("\"]');if(cb)tog('clk',cb);");
+      client.print("var nn=document.querySelector('.tb.nit[data-v=\"");
+      client.print(nightDim ? 1 : 0);
+      client.print("\"]');if(nn)tog('nit',nn);");
+      client.print("var nbv=document.getElementById('nb');if(nbv){nbv.value=");
+      client.print(nightBrightPct);
+      client.print(";upd('nbc',nbv.value);}");
+      client.print("var nsv=document.getElementById('ns');if(nsv)nsv.value=");
+      client.print(nightStartHr);
+      client.print(";");
+      client.print("var nev=document.getElementById('ne');if(nev)nev.value=");
+      client.print(nightEndHr);
+      client.print(";");
       client.print("</script>");
     }
 
@@ -1177,11 +1422,15 @@ void setup()
   }
 
   curMessage[0] = newMessage[0] = '\0';
+  loadSettings();
+
   strcpy(curMessage, "Starting up...");
+  lastMsgMs = millis();
   layoutLines();
   renderFrame();
 
   PRINT("\nConnecting to ", ssid);
+  WiFi.setHostname(HOSTNAME);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     PRINT("\n", WiFi.status());
@@ -1189,6 +1438,17 @@ void setup()
   }
   PRINTS("\nWiFi connected");
   PRINT("\nIP: ", WiFi.localIP());
+
+  // Reachable by name, so a changed DHCP lease doesn't strand the UI.
+  if (MDNS.begin(HOSTNAME)) {
+    MDNS.addService("http", "tcp", 80);
+    PRINTS("\nmDNS: http://" HOSTNAME ".local/");
+  } else {
+    PRINTS("\nmDNS start failed (IP still works)");
+  }
+
+  // Clock for the stale-message fallback and night dimming.
+  configTzTime(TZ_INFO, NTP_1, NTP_2);
 
   server.begin();
   PRINTS("\nHTTP server running on port 80");
@@ -1200,6 +1460,22 @@ void setup()
 void loop()
 {
   handleWiFi();
+
+  // Debounced settings write: one NVS commit after the changes settle.
+  if (settingsDirty && (int32_t)(millis() - settingsDueMs) >= 0)
+    saveSettings();
+
+  // Once a minute, refresh the clock row / re-evaluate staleness and night
+  // dimming. Cheap, and it keeps a still display correct without scrolling.
+  static int lastMin = -1;
+  if (timeValid()) {
+    struct tm tmv;
+    if (getLocalTime(&tmv, 0) && tmv.tm_min != lastMin) {
+      lastMin = tmv.tm_min;
+      layoutLines();
+      renderFrame();
+    }
+  }
 
   if (millis() - lastStep >= scrollSpeed) {
     lastStep = millis();

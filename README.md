@@ -41,6 +41,8 @@ connect USB-C for flashing.
 4. Open `MatrixPortalS3_Scrolling_Web_JW_10.ino`, compile, and upload.
 5. Open the Serial Monitor at **57600 baud** — it prints the device IP once
    Wi-Fi connects. Browse to that IP and log in with one of your accounts.
+   The device also advertises itself over mDNS, so **http://ticker.local/**
+   works even if its DHCP lease changes.
 
 ## Web UI
 
@@ -69,11 +71,15 @@ connect USB-C for flashing.
   | Neon | yellow | magenta | cyan |
 - **Custom message** — type and send any text
 - **Presets** — one-tap status messages (In a Meeting, On Break, …)
-- **Display controls** — scroll speed, text size (S/M/L/XL), brightness
-  (0–100 %), text color picker, **solid / rainbow** color mode, and scroll
-  direction
+- **Display controls** — scroll speed, text size (S/M/L/XL), brightness,
+  line gap, park time, clock mode, night dimming, and scroll direction
 - **Firmware** — shows the installed version and a **Check for Updates**
   button that asks GitHub whether a newer version exists
+- **Settings persist** — every display setting is saved to the ESP32's NVS
+  flash and restored on boot, so a power cut doesn't reset your tuning
+- **Clock fallback** — if no update arrives for 20 minutes (PC asleep, sync
+  stopped) the panel shows the time and date instead of a frozen status
+- **Night dimming** — drops to a low brightness overnight on a schedule
 - **Blank** — clears the panel
 
 ## HTTP API
@@ -88,6 +94,10 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&LG=`  | Line gap 0–6 (blank pixels between rows) | `/&LG=2` |
 | `/&PK=`  | Park time 0–10000 ms a row holds still before scrolling | `/&PK=1500` |
 | `/&SK=`  | Sticky labels: `1` pins `NOW:`/`NEXT:`, `0` scrolls the whole row | `/&SK=1` |
+| `/&CL=`  | Clock: `0` off, `1` always a row, `2` only when idle | `/&CL=2` |
+| `/&ND=`  | Night dimming on/off | `/&ND=1` |
+| `/&NB=`  | Night brightness percent | `/&NB=8` |
+| `/&NS=` `/&NE=` | Night window start / end hour (24h) | `/&NS=22` `/&NE=7` |
 | `/&BR=`  | Brightness percent (0–100) | `/&BR=60` |
 | `/&CO=`  | Flat color override, `RRGGBB` hex (overrides the theme) | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |
