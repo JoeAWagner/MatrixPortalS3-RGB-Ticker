@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+
+	<!-- Shown in the Local Network permission prompt. Without this key iOS
+	     silently returns zero Bonjour results. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Thread Map looks for Thread border routers and smart-home devices advertising themselves on your Wi-Fi network. Nothing leaves your device.</string>
+
+	<!-- Every service type the app browses must be declared here; anything
+	     missing from this list is invisible to NWBrowser at runtime. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_meshcop._udp</string>
+		<string>_meshcop-e._tcp</string>
+		<string>_trel._udp</string>
+		<string>_matter._tcp</string>
+		<string>_matterc._udp</string>
+		<string>_hap._udp</string>
+		<string>_hap._tcp</string>
+	</array>
+
+	<key>NSHomeKitUsageDescription</key>
+	<string>Thread Map reads your homes so it can label discovered devices with the names and rooms you already gave them. It never changes anything.</string>
+</dict>
+</plist>
