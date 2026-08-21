@@ -72,6 +72,7 @@ RETRY_DELAY     = 2            # seconds between those attempts
 WEATHER_ZIP     = os.environ.get("WEATHER_ZIP", "11786")   # Shoreham, NY
 WEATHER_UNITS   = "fahrenheit"   # or "celsius"
 WEATHER_MINS    = 15             # refresh interval (minutes)
+HEARTBEAT_MINS  = 10             # re-push even when unchanged (see below)
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -356,6 +357,12 @@ def main() -> None:
     last_reason  = None
     last_weather = None
     weather_due  = 0.0      # monotonic deadline for the next weather refresh
+    # Updates are normally only pushed when the text changes, but that leaves
+    # the ticker stranded if IT reboots: it comes up showing "Starting up..."
+    # and we never resend because nothing changed on our side. A periodic
+    # re-push fixes that, and gives the firmware's idle detection a real
+    # liveness signal to work with.
+    heartbeat_due = 0.0
     stale        = False    # true while some calendar is failing to respond
 
     calendar_due = 0.0      # set ahead when iCloud rate-limits us
@@ -364,10 +371,15 @@ def main() -> None:
         # Weather first, and in its own try: it must keep working even when
         # iCloud is unreachable or throttling us.
         try:
-            if time.monotonic() >= weather_due:
+            beat = time.monotonic() >= heartbeat_due
+            if beat:
+                heartbeat_due = time.monotonic() + HEARTBEAT_MINS * 60
+
+            if time.monotonic() >= weather_due or beat:
                 wx, icon = get_weather()
-                weather_due = time.monotonic() + WEATHER_MINS * 60
-                if wx and (wx, icon) != last_weather:
+                if time.monotonic() >= weather_due:
+                    weather_due = time.monotonic() + WEATHER_MINS * 60
+                if wx and ((wx, icon) != last_weather or beat):
                     ok, reason = send_ticker(wx, param="WX", icon=icon)
                     if ok:
                         last_weather = (wx, icon)
@@ -410,7 +422,7 @@ def main() -> None:
             # Only push when the text changes. Because last_message is updated
             # ONLY on a successful send, a pending update keeps retrying every
             # poll until the device is reachable again — then it goes through.
-            if message != last_message:
+            if message != last_message or beat:
                 ok, reason = send_ticker(message)
                 if ok:
                     last_message = message

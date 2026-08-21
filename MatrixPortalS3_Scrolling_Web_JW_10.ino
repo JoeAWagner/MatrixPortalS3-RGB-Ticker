@@ -34,7 +34,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.9.0"
+#define FW_VERSION   "1.9.1"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -1566,6 +1566,13 @@ void handleWiFi(void)
       client.print(displayOn ? "<b>ON</b>" : "<b>ASLEEP</b> (matrix.stop)");
       client.print(", sensing ");
       client.print(presenceEnabled ? "enabled" : "disabled");
+      // Refresh counter straight from Protomatter. If this is climbing, the
+      // driver is scanning the panel and any blankness is electrical (panel
+      // 5V / ribbon), not firmware.
+      client.print("<br>Refresh frames: ");
+      client.print(matrix.getFrameCount());
+      client.print(" &middot; rows drawn: ");
+      client.print(numLines);
       client.print("';");
       client.print("</script>");
     }
