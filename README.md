@@ -141,11 +141,22 @@ miswired or on the wrong baud it says so explicitly instead of failing quietly.
 
 ### How the sleep works
 
-Blanking the screen is *not* enough — a HUB75 panel keeps scanning and drawing
-current with a black frame. On no-presence the firmware calls
-`matrix.stop()`, which drives **OE high (all drivers off)**, halts the refresh
-timer, and clocks zeros into the shift registers. Draw drops to near idle.
-Walking back into range calls `matrix.resume()` and redraws.
+On no-presence the firmware blanks the framebuffer, which removes all LED
+current — the dominant term in panel draw. The refresh engine keeps running, so
+the panel can sleep and wake indefinitely.
+
+> **Why not `matrix.stop()`?** It saves more (OE high, timer halted), but the
+> only way back is `matrix.resume()`, and on ESP32-S3 that re-runs
+> `_PM_timerInit()`, which calls `gdma_new_channel()` **every time** — the
+> "already allocated" guard in Adafruit_Protomatter is compiled only for
+> CircuitPython. Each wake therefore leaks a DMA channel; the timer ISR keeps
+> counting frames while the panel stays permanently dark. Verified the hard
+> way. Blanking has no such limit.
+
+For a *deep* saving on battery, fit a logic-level high-side MOSFET on the
+panel's 5 V rail and set `PANEL_PWR_PIN` to the GPIO that drives it. The
+firmware then cuts panel power entirely when asleep and restores it on wake,
+with the ESP32 (and Wi-Fi) staying up throughout.
 
 Tune **WAKE RANGE** (how close you must be) and **STAY LIT** (how long it stays
 awake after you leave) in the web UI.
@@ -168,8 +179,12 @@ own, they vary a lot with content and brightness:
 | Setup | Estimated runtime |
 |---|---|
 | Always lit, no sensing | **~5 h** |
-| Presence sensing, lit ~20 % of the time | **~8 h** |
-| Presence sensing + Wi-Fi saver | **~10–11 h** |
+| Presence blanking, lit ~20 % of the time | **~6–7 h** |
+| Presence blanking + Wi-Fi saver | **~8 h** |
+| Presence + `PANEL_PWR_PIN` MOSFET + Wi-Fi saver | **~13–15 h** |
+
+Blanking removes LED current but the panel keeps scanning (80–150 mA), which is
+why the MOSFET row is so much better — it takes panel draw to zero.
 
 Note the radar itself costs about as much as the ESP32, which caps the benefit.
 For multi-day life you want a bigger pack (a 10000 mAh USB power bank gets you

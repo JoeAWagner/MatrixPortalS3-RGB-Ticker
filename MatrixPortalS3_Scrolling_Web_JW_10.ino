@@ -34,7 +34,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.9.1"
+#define FW_VERSION   "1.9.2"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -163,12 +163,26 @@ uint32_t lastMsgMs = 0;            // when the last /&MSG= arrived
 
 // ---- LD2450 presence sensing (battery mode) -----------------------------
 // A 24GHz mmWave radar on Serial1. When nobody is in front of the panel the
-// display is fully powered down via matrix.stop(), which drops OE and halts
-// the refresh timer - far bigger a saving than merely drawing a black frame.
+// framebuffer is blanked, which removes all LED current. For a deeper saving
+// fit a MOSFET on the panel's 5V rail (see PANEL_PWR_PIN below).
 #define LD2450_BAUD   256000       // note: not a typical baud rate
 #define LD2450_RX_PIN 8            // board silk "RX"  <- LD2450 TX
 #define LD2450_TX_PIN 18           // board silk "TX"  -> LD2450 RX (config only)
 #define LD2450_FRAME  30           // AA FF 03 00 + 3 targets x 8 + 55 CC
+
+// Optional hardware power switch on the panel's 5V rail (a logic-level
+// high-side MOSFET module driven from a spare GPIO). Set to that pin to cut
+// panel power completely when asleep; -1 means "no switch fitted".
+//
+// Why this exists: matrix.stop() would save the most power, but the only way
+// back is matrix.resume(), and on ESP32-S3 that re-runs _PM_timerInit(),
+// which calls gdma_new_channel() every time - the "already allocated" guard
+// in Adafruit_Protomatter is compiled only for CircuitPython. Each wake
+// therefore leaks a DMA channel and the panel stays dark while the timer ISR
+// keeps counting frames. So we blank the framebuffer instead, which is
+// unlimited-cycle safe, and let a MOSFET do the deep saving if fitted.
+#define PANEL_PWR_PIN         -1
+#define PANEL_PWR_ACTIVE_HIGH  1
 
 bool     presenceEnabled = false;  // (/&PR=)
 uint16_t presenceRangeMm = 3000;   // wake within this range; 0 = any (/&PD=)
@@ -382,8 +396,28 @@ void pollPresence(void)
   }
 }
 
-// Power the panel up or down to match presence. matrix.stop() sets OE high
-// and halts the refresh timer, so a blanked panel costs almost nothing.
+// Blank the panel without touching the refresh engine. This removes all LED
+// current (the dominant term) while leaving DMA and the timer untouched, so
+// it can cycle forever - unlike stop()/resume(). See PANEL_PWR_PIN above.
+void panelSleep(void)
+{
+  matrix.fillScreen(0);
+  matrix.show();
+  if (PANEL_PWR_PIN >= 0)
+    digitalWrite(PANEL_PWR_PIN, PANEL_PWR_ACTIVE_HIGH ? LOW : HIGH);
+}
+
+void panelWake(void)
+{
+  if (PANEL_PWR_PIN >= 0) {
+    digitalWrite(PANEL_PWR_PIN, PANEL_PWR_ACTIVE_HIGH ? HIGH : LOW);
+    delay(50);                       // let the rail settle before driving data
+  }
+  layoutLines();
+  renderFrame();
+}
+
+// Power the panel up or down to match presence.
 void updateDisplayPower(void)
 {
   bool want;
@@ -395,14 +429,12 @@ void updateDisplayPower(void)
   }
 
   if (want && !displayOn) {
-    matrix.resume();
     displayOn = true;
-    layoutLines();
-    renderFrame();
+    panelWake();
     PRINTS("\nPresence: display ON");
   } else if (!want && displayOn) {
-    matrix.stop();
     displayOn = false;
+    panelSleep();
     PRINTS("\nPresence: display OFF");
   }
 }
@@ -1563,7 +1595,7 @@ void handleWiFi(void)
       // Always report panel power, so the sleep/wake path is observable even
       // when the radar is silent.
       client.print("<br>Panel: ");
-      client.print(displayOn ? "<b>ON</b>" : "<b>ASLEEP</b> (matrix.stop)");
+      client.print(displayOn ? "<b>ON</b>" : "<b>ASLEEP</b> (blanked)");
       client.print(", sensing ");
       client.print(presenceEnabled ? "enabled" : "disabled");
       // Refresh counter straight from Protomatter. If this is climbing, the
@@ -1634,6 +1666,11 @@ void setup()
   }
 
   applyWifiPowerSave();
+
+  if (PANEL_PWR_PIN >= 0) {
+    pinMode(PANEL_PWR_PIN, OUTPUT);
+    digitalWrite(PANEL_PWR_PIN, PANEL_PWR_ACTIVE_HIGH ? HIGH : LOW);
+  }
 
   // LD2450 presence radar on the header's TX/RX pins.
   Serial1.begin(LD2450_BAUD, SERIAL_8N1, LD2450_RX_PIN, LD2450_TX_PIN);
