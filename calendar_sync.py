@@ -178,6 +178,40 @@ def _as_utc(dt):
     return dt
 
 
+def _extract_events(event):
+    """
+    Yield (start, end, summary) for each VEVENT in a CalDAV object.
+
+    caldav 2.0 dropped vobject as a dependency, so prefer the icalendar API
+    that ships with modern caldav and only fall back to vobject_instance for
+    older installs. Using vobject_instance on caldav >= 2 raises and every
+    event silently vanishes - which reads as an empty calendar, i.e. "I am
+    Free" while meetings are actually in progress.
+    """
+    try:
+        cal = event.icalendar_instance
+    except Exception:
+        cal = None
+
+    if cal is not None:
+        for comp in cal.walk("VEVENT"):
+            dtstart = comp.get("dtstart")
+            if dtstart is None:
+                continue
+            start = dtstart.dt
+            dtend = comp.get("dtend")
+            end = dtend.dt if dtend is not None else start
+            summary = str(comp.get("summary") or "(busy)").strip()
+            yield start, end, summary
+        return
+
+    ve = event.vobject_instance.vevent          # legacy caldav < 2
+    start = ve.dtstart.value
+    end = ve.dtend.value if hasattr(ve, "dtend") else start
+    summary = ve.summary.value.strip() if hasattr(ve, "summary") else "(busy)"
+    yield start, end, summary
+
+
 def collect_events(calendars, now):
     """
     Return (events, failures) where events is a list of (start, end, summary)
@@ -206,20 +240,16 @@ def collect_events(calendars, now):
 
         for event in found:
             try:
-                ve = event.vobject_instance.vevent
-                dtstart = ve.dtstart.value
-                dtend   = ve.dtend.value if hasattr(ve, "dtend") else dtstart
-
-                # Skip all-day events — they are date objects, not datetimes
-                if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
-                    continue
-
-                dtstart = _as_utc(dtstart)
-                dtend   = _as_utc(dtend)
-                summary = ve.summary.value.strip() if hasattr(ve, "summary") else "(busy)"
-                events.append((dtstart, dtend, summary))
-            except AttributeError:
-                continue   # event missing expected fields
+                for dtstart, dtend, summary in _extract_events(event):
+                    # Skip all-day events - they are date objects, not datetimes
+                    if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
+                        continue
+                    events.append((_as_utc(dtstart), _as_utc(dtend), summary))
+            except Exception as e:
+                # An event we cannot read is not an event we know is absent,
+                # so count it as a failure rather than silently dropping it.
+                failures += 1
+                log.debug("Event parse failed: %s", e)
 
     return events, failures
 

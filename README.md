@@ -229,8 +229,16 @@ answer, the sync holds the last known status and logs it, then resumes once all
 calendars report again.
 
 ```bash
-pip install caldav requests
+py -3 -m pip install caldav requests
 ```
+
+Use `py -3 -m pip`, not a bare `pip`. On Windows, if a real Python install is
+removed or drops off `PATH`, the **Microsoft Store alias** at
+`...\AppData\Local\Microsoft\WindowsApps\python.exe` silently takes its
+place — it is a stub that opens the Store and exits, so anything launched
+through it appears to start and then does nothing. `run_sync.ps1` explicitly
+skips that path and proves each candidate interpreter by importing `caldav`
+and `requests` before using it, logging which one it picked.
 
 Configure via environment variables (keeps credentials out of the file):
 
@@ -276,6 +284,19 @@ only ever runs one copy at a time. Remove it with `install-startup.ps1 -Uninstal
 auto-restarts on failure) — but on many machines creating a task needs an
 **elevated** PowerShell ("Run as administrator"). If it can't, it now tells you so
 and points you back to `install-startup.ps1`.
+
+### Troubleshooting
+
+**Nothing on the panel and nothing in `calendar_sync.log`** — the launcher never
+got a working interpreter. The log now records which Python it chose, or an
+explicit error if none had the dependencies.
+
+**Everything shows "I am Free" despite real meetings** — this is what happens
+when events cannot be parsed at all. caldav 2.0 dropped `vobject` as a
+dependency; the sync now uses the `icalendar` API that ships with modern caldav
+and falls back to `vobject_instance` only on older installs. Unparseable events
+also count as failures, so an incomplete read holds the last known status
+instead of claiming you are free.
 
 ### Is the Python bridge the right approach?
 
