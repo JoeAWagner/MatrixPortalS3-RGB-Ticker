@@ -18,6 +18,8 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
+#include <esp_wifi.h>
+#include <math.h>
 #include <Preferences.h>
 #include <time.h>
 #include <Adafruit_Protomatter.h>
@@ -32,7 +34,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.8.0"
+#define FW_VERSION   "1.9.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -158,6 +160,26 @@ uint8_t  nightStartHr  = 22;       // (/&NS=)
 uint8_t  nightEndHr    = 7;        // (/&NE=)
 
 uint32_t lastMsgMs = 0;            // when the last /&MSG= arrived
+
+// ---- LD2450 presence sensing (battery mode) -----------------------------
+// A 24GHz mmWave radar on Serial1. When nobody is in front of the panel the
+// display is fully powered down via matrix.stop(), which drops OE and halts
+// the refresh timer - far bigger a saving than merely drawing a black frame.
+#define LD2450_BAUD   256000       // note: not a typical baud rate
+#define LD2450_RX_PIN 8            // board silk "RX"  <- LD2450 TX
+#define LD2450_TX_PIN 18           // board silk "TX"  -> LD2450 RX (config only)
+#define LD2450_FRAME  30           // AA FF 03 00 + 3 targets x 8 + 55 CC
+
+bool     presenceEnabled = false;  // (/&PR=)
+uint16_t presenceRangeMm = 3000;   // wake within this range; 0 = any (/&PD=)
+uint16_t presenceHoldSec = 60;     // keep lit this long after the last hit (/&PH=)
+bool     wifiPowerSave   = false;  // modem sleep between beacons (/&WP=)
+
+bool     displayOn    = true;      // is the panel currently powered up?
+bool     targetSeen   = false;     // a qualifying target in the latest frame
+uint16_t lastTargetMm = 0;         // nearest target distance, for the web UI
+uint32_t lastSeenMs   = 0;
+uint32_t radarFrames  = 0;         // sanity counter: 0 => wiring/baud problem
 #define LABEL_MAX_CHARS 8          // longest label we'll pin (keeps the window usable)
 
 // Height of one row including its spacing, and how many rows fit:
@@ -312,6 +334,85 @@ bool messageIsStale(void)
 }
 
 // ============================================================
+//  PRESENCE (LD2450 mmWave radar)
+// ============================================================
+// Frame: AA FF 03 00 | 3 targets x 8 bytes | 55 CC
+// Target: x(2) y(2) speed(2) resolution(2), little-endian.
+void pollPresence(void)
+{
+  static uint8_t buf[LD2450_FRAME];
+  static uint8_t idx = 0;
+
+  while (Serial1.available()) {
+    uint8_t b = Serial1.read();
+
+    // Resync on the 4-byte header rather than trusting stream alignment.
+    if (idx == 0 && b != 0xAA) continue;
+    if (idx == 1 && b != 0xFF) { idx = 0; continue; }
+    if (idx == 2 && b != 0x03) { idx = 0; continue; }
+    if (idx == 3 && b != 0x00) { idx = 0; continue; }
+
+    buf[idx++] = b;
+    if (idx < LD2450_FRAME) continue;
+    idx = 0;
+
+    if (buf[28] != 0x55 || buf[29] != 0xCC) continue;   // tail mismatch
+    radarFrames++;
+
+    bool     hit     = false;
+    uint32_t nearest = 0xFFFFFFFF;
+    for (uint8_t t = 0; t < 3; t++) {
+      const uint8_t *q = buf + 4 + t * 8;
+      uint16_t xr = (uint16_t)q[0] | ((uint16_t)q[1] << 8);
+      uint16_t yr = (uint16_t)q[2] | ((uint16_t)q[3] << 8);
+      if (!xr && !yr) continue;                          // empty target slot
+
+      // Only the magnitude matters for range gating, and the magnitude is
+      // the low 15 bits whichever way round the sign bit is encoded - so
+      // this stays correct without depending on that detail.
+      uint32_t x = xr & 0x7FFF, y = yr & 0x7FFF;
+      uint32_t d = (uint32_t)sqrtf((float)(x * x + y * y));
+      if (d < nearest) nearest = d;
+      if (!presenceRangeMm || d <= presenceRangeMm) hit = true;
+    }
+
+    if (nearest != 0xFFFFFFFF) lastTargetMm = (uint16_t)nearest;
+    targetSeen = hit;
+    if (hit) lastSeenMs = millis();
+  }
+}
+
+// Power the panel up or down to match presence. matrix.stop() sets OE high
+// and halts the refresh timer, so a blanked panel costs almost nothing.
+void updateDisplayPower(void)
+{
+  bool want;
+  if (!presenceEnabled) {
+    want = true;                       // sensing off => always lit
+  } else {
+    want = targetSeen ||
+           (millis() - lastSeenMs) < (uint32_t)presenceHoldSec * 1000UL;
+  }
+
+  if (want && !displayOn) {
+    matrix.resume();
+    displayOn = true;
+    layoutLines();
+    renderFrame();
+    PRINTS("\nPresence: display ON");
+  } else if (!want && displayOn) {
+    matrix.stop();
+    displayOn = false;
+    PRINTS("\nPresence: display OFF");
+  }
+}
+
+void applyWifiPowerSave(void)
+{
+  esp_wifi_set_ps(wifiPowerSave ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE);
+}
+
+// ============================================================
 //  SETTINGS PERSISTENCE (NVS)
 // ============================================================
 // Display settings survive a reboot. Writes are debounced: dragging a
@@ -347,6 +448,10 @@ void saveSettings(void)
   prefs.putUChar ("nb", nightBrightPct);
   prefs.putUChar ("ns", nightStartHr);
   prefs.putUChar ("ne", nightEndHr);
+  prefs.putBool  ("pr", presenceEnabled);
+  prefs.putUShort("pd", presenceRangeMm);
+  prefs.putUShort("ph", presenceHoldSec);
+  prefs.putBool  ("wp", wifiPowerSave);
   prefs.end();
   settingsDirty = false;
   PRINTS("\nSettings saved to NVS");
@@ -371,6 +476,10 @@ void loadSettings(void)
   nightBrightPct = prefs.getUChar ("nb", nightBrightPct);
   nightStartHr   = prefs.getUChar ("ns", nightStartHr);
   nightEndHr     = prefs.getUChar ("ne", nightEndHr);
+  presenceEnabled = prefs.getBool  ("pr", presenceEnabled);
+  presenceRangeMm = prefs.getUShort("pd", presenceRangeMm);
+  presenceHoldSec = prefs.getUShort("ph", presenceHoldSec);
+  wifiPowerSave   = prefs.getBool  ("wp", wifiPowerSave);
   prefs.end();
 
   // Clamp everything: NVS could hold values from an older build.
@@ -384,6 +493,8 @@ void loadSettings(void)
   nightBrightPct = constrain(nightBrightPct, 1, 100);
   if (nightStartHr > 23) nightStartHr = 22;
   if (nightEndHr   > 23) nightEndHr   = 7;
+  presenceRangeMm = constrain(presenceRangeMm, 0, 8000);
+  presenceHoldSec = constrain(presenceHoldSec, 5, 3600);
   PRINTS("\nSettings loaded from NVS");
 }
 
@@ -858,6 +969,20 @@ void getData(const char *buf)
   p = strstr(buf, "/&NE=");
   if (p) { nightEndHr = constrain((int16_t)atoi(p + 5), 0, 23); markSettingsDirty(); }
 
+  // Presence sensing: /&PR=0|1 enable, /&PD= wake range mm, /&PH= hold seconds
+  p = strstr(buf, "/&PR=");
+  if (p) { presenceEnabled = (*(p + 5) == '1'); markSettingsDirty(); }
+
+  p = strstr(buf, "/&PD=");
+  if (p) { presenceRangeMm = constrain((int32_t)atol(p + 5), 0, 8000); markSettingsDirty(); }
+
+  p = strstr(buf, "/&PH=");
+  if (p) { presenceHoldSec = constrain((int32_t)atol(p + 5), 5, 3600); markSettingsDirty(); }
+
+  // Wi-Fi modem sleep between beacons - saves power, costs a little latency
+  p = strstr(buf, "/&WP=");
+  if (p) { wifiPowerSave = (*(p + 5) == '1'); applyWifiPowerSave(); markSettingsDirty(); }
+
   // Weather line: /&WX=<text>/&   (empty value clears it)
   p = strstr(buf, "/&WX=");
   if (p) {
@@ -1155,11 +1280,14 @@ void handleWiFi(void)
         "var k=document.querySelector('.tb.stk.on');"
         "var cl=document.querySelector('.tb.clk.on');var nd=document.querySelector('.tb.nit.on');"
         "var nb=document.getElementById('nb').value;"
+        "var pr=document.querySelector('.tb.prs.on');var wp=document.querySelector('.tb.wps.on');"
+        "var pd=document.getElementById('pd').value;var ph=document.getElementById('ph').value;"
         "var ns=document.getElementById('ns').value;var ne=document.getElementById('ne').value;"
         "var url='/&SP='+s+'/&BR='+b+'/&LG='+g+'/&PK='+pk;"
         "if(t)url+='/&TH='+t.dataset.v;if(k)url+='/&SK='+k.dataset.v;"
         "if(cl)url+='/&CL='+cl.dataset.v;if(nd)url+='/&ND='+nd.dataset.v;"
-        "url+='/&NB='+nb+'/&NS='+ns+'/&NE='+ne;"
+        "url+='/&NB='+nb+'/&NS='+ns+'/&NE='+ne+'/&PD='+pd+'/&PH='+ph;"
+        "if(pr)url+='/&PR='+pr.dataset.v;if(wp)url+='/&WP='+wp.dataset.v;"
         "if(d)url+='/&SD='+d.dataset.v;if(z)url+='/&TS='+z.dataset.v;"
         "url+='/&nc='+Math.random();"
         "var r=new XMLHttpRequest();r.open('GET',url,false);r.send();sts('Controls applied');}"
@@ -1305,6 +1433,25 @@ void handleWiFi(void)
         "</div></div>"
         "<div class=\"row\"><button class=\"btn prim\" onclick=\"apl()\">APPLY CONTROLS</button></div></div>"
 
+        "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#128225;</span>PRESENCE (LD2450)</div>"
+        "<div class=\"row\"><span class=\"cl\">SENSING</span><div class=\"tg\">"
+        "<button class=\"tb prs\" data-v=\"1\" onclick=\"tog('prs',this)\">ON</button>"
+        "<button class=\"tb prs on\" data-v=\"0\" onclick=\"tog('prs',this)\">OFF</button>"
+        "</div></div>"
+        "<div class=\"row\"><span class=\"cl\">WAKE RANGE</span>"
+        "<input type=\"range\" id=\"pd\" min=\"0\" max=\"8000\" step=\"250\" value=\"3000\""
+        " oninput=\"upd('pdc',this.value==0?'any':(this.value/1000).toFixed(2)+'m')\">"
+        "<span class=\"cv\" id=\"pdc\" style=\"min-width:44px\">3.00m</span></div>"
+        "<div class=\"row\"><span class=\"cl\">STAY LIT</span>"
+        "<input type=\"range\" id=\"ph\" min=\"5\" max=\"600\" step=\"5\" value=\"60\""
+        " oninput=\"upd('phc',this.value+'s')\">"
+        "<span class=\"cv\" id=\"phc\" style=\"min-width:44px\">60s</span></div>"
+        "<div class=\"row\"><span class=\"cl\">WIFI SAVER</span><div class=\"tg\">"
+        "<button class=\"tb wps\" data-v=\"1\" onclick=\"tog('wps',this)\">ON</button>"
+        "<button class=\"tb wps on\" data-v=\"0\" onclick=\"tog('wps',this)\">OFF</button>"
+        "</div></div>"
+        "<div id=\"prstat\" style=\"font-size:.75rem;color:var(--muted);margin-top:12px;line-height:1.6\"></div></div>"
+
         "<div class=\"card\"><div class=\"ctitle\"><span class=\"ico\">&#8635;</span>FIRMWARE</div>"
         "<div class=\"row\"><span class=\"cl\">VERSION</span>"
         "<span class=\"cv\" id=\"fwcur\" style=\"min-width:auto\">&#8230;</span>"
@@ -1388,6 +1535,38 @@ void handleWiFi(void)
       client.print("var nev=document.getElementById('ne');if(nev)nev.value=");
       client.print(nightEndHr);
       client.print(";");
+      client.print("var pb=document.querySelector('.tb.prs[data-v=\"");
+      client.print(presenceEnabled ? 1 : 0);
+      client.print("\"]');if(pb)tog('prs',pb);");
+      client.print("var wb=document.querySelector('.tb.wps[data-v=\"");
+      client.print(wifiPowerSave ? 1 : 0);
+      client.print("\"]');if(wb)tog('wps',wb);");
+      client.print("var pdv=document.getElementById('pd');if(pdv){pdv.value=");
+      client.print(presenceRangeMm);
+      client.print(";upd('pdc',pdv.value==0?'any':(pdv.value/1000).toFixed(2)+'m');}");
+      client.print("var phv=document.getElementById('ph');if(phv){phv.value=");
+      client.print(presenceHoldSec);
+      client.print(";upd('phc',phv.value+'s');}");
+
+      // Live radar status: radarFrames == 0 means the sensor never spoke,
+      // which is the signature of a wiring or baud-rate problem.
+      client.print("var ps=document.getElementById('prstat');if(ps)ps.innerHTML='");
+      if (radarFrames == 0) {
+        client.print("&#9888; No LD2450 data yet - check wiring (sensor TX to board RX/GPIO8) and 5V power.");
+      } else {
+        client.print("Radar OK, ");
+        client.print(radarFrames);
+        client.print(" frames &middot; ");
+        client.print(targetSeen ? "&#128100; person detected" : "no one detected");
+        if (lastTargetMm) { client.print(" &middot; nearest "); client.print(lastTargetMm); client.print("mm"); }
+      }
+      // Always report panel power, so the sleep/wake path is observable even
+      // when the radar is silent.
+      client.print("<br>Panel: ");
+      client.print(displayOn ? "<b>ON</b>" : "<b>ASLEEP</b> (matrix.stop)");
+      client.print(", sensing ");
+      client.print(presenceEnabled ? "enabled" : "disabled");
+      client.print("';");
       client.print("</script>");
     }
 
@@ -1447,6 +1626,12 @@ void setup()
     PRINTS("\nmDNS start failed (IP still works)");
   }
 
+  applyWifiPowerSave();
+
+  // LD2450 presence radar on the header's TX/RX pins.
+  Serial1.begin(LD2450_BAUD, SERIAL_8N1, LD2450_RX_PIN, LD2450_TX_PIN);
+  PRINTS("\nLD2450 UART started on RX=8 TX=18 @256000");
+
   // Clock for the stale-message fallback and night dimming.
   configTzTime(TZ_INFO, NTP_1, NTP_2);
 
@@ -1460,6 +1645,8 @@ void setup()
 void loop()
 {
   handleWiFi();
+  pollPresence();
+  updateDisplayPower();
 
   // Debounced settings write: one NVS commit after the changes settle.
   if (settingsDirty && (int32_t)(millis() - settingsDueMs) >= 0)
@@ -1472,8 +1659,7 @@ void loop()
     struct tm tmv;
     if (getLocalTime(&tmv, 0) && tmv.tm_min != lastMin) {
       lastMin = tmv.tm_min;
-      layoutLines();
-      renderFrame();
+      if (displayOn) { layoutLines(); renderFrame(); }
     }
   }
 
@@ -1486,7 +1672,7 @@ void loop()
     for (uint8_t i = 0; i < numLines && !needsFrame; i++)
       if (lines[i].scrolls) needsFrame = true;
 
-    if (needsFrame) {
+    if (needsFrame && displayOn) {
       advanceScroll();
       renderFrame();
     }

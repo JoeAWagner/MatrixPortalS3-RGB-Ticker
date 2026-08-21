@@ -80,6 +80,8 @@ connect USB-C for flashing.
 - **Clock fallback** — if no update arrives for 20 minutes (PC asleep, sync
   stopped) the panel shows the time and date instead of a frozen status
 - **Night dimming** — drops to a low brightness overnight on a schedule
+- **Presence sensing** — with an LD2450 mmWave radar attached, the panel powers
+  down when nobody is nearby and wakes when you walk up (see below)
 - **Blank** — clears the panel
 
 ## HTTP API
@@ -98,6 +100,10 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&ND=`  | Night dimming on/off | `/&ND=1` |
 | `/&NB=`  | Night brightness percent | `/&NB=8` |
 | `/&NS=` `/&NE=` | Night window start / end hour (24h) | `/&NS=22` `/&NE=7` |
+| `/&PR=`  | Presence sensing on/off (LD2450) | `/&PR=1` |
+| `/&PD=`  | Wake range in mm (`0` = any distance) | `/&PD=3000` |
+| `/&PH=`  | Keep the panel lit this many seconds after the last detection | `/&PH=60` |
+| `/&WP=`  | Wi-Fi modem sleep (saves power, adds a little latency) | `/&WP=1` |
 | `/&BR=`  | Brightness percent (0–100) | `/&BR=60` |
 | `/&CO=`  | Flat color override, `RRGGBB` hex (overrides the theme) | `/&CO=f0a500` |
 | `/&CM=`  | Color mode: `S` solid, `R` rainbow | `/&CM=R` |
@@ -114,6 +120,67 @@ Example:
 ```bash
 curl -u joe:yourpass "http://<device-ip>/&MSG=On%20Air/&CO=ff0000/&CM=S/&"
 ```
+
+## Battery use & presence sensing (optional)
+
+For a battery build the panel — not the ESP32 — is what drains the pack. An
+**LD2450 24 GHz mmWave radar** lets the display sleep whenever nobody is there.
+
+### Wiring
+
+| LD2450 | MatrixPortal S3 | Note |
+|---|---|---|
+| VCC | 5 V | ~80–100 mA continuous |
+| GND | GND | |
+| TX | **RX** (GPIO 8) | sensor → board, this is the one that matters |
+| RX | **TX** (GPIO 18) | only needed to reconfigure the sensor |
+
+The sensor talks UART at **256000 baud** (an unusual rate — it is not a typo).
+The web UI's PRESENCE card shows a live frame counter, so if the sensor is
+miswired or on the wrong baud it says so explicitly instead of failing quietly.
+
+### How the sleep works
+
+Blanking the screen is *not* enough — a HUB75 panel keeps scanning and drawing
+current with a black frame. On no-presence the firmware calls
+`matrix.stop()`, which drives **OE high (all drivers off)**, halts the refresh
+timer, and clocks zeros into the shift registers. Draw drops to near idle.
+Walking back into range calls `matrix.resume()` and redraws.
+
+Tune **WAKE RANGE** (how close you must be) and **STAY LIT** (how long it stays
+awake after you leave) in the web UI.
+
+### Power budget
+
+A 3000 mAh 1S LiPo holds ~11 Wh; after boosting to 5 V at ~88 % you get roughly
+**1900 mAh at 5 V** to spend. Rough figures for a 64×32 P4 panel — measure your
+own, they vary a lot with content and brightness:
+
+| State | Approx draw |
+|---|---|
+| Panel showing text @ 30 % brightness | 150–400 mA |
+| Panel black but still refreshing | 80–150 mA |
+| **Panel `stop()`ed** | ~5–20 mA |
+| ESP32-S3 + Wi-Fi active | 90–130 mA |
+| ESP32-S3 + Wi-Fi modem sleep | 30–50 mA |
+| LD2450 radar | 80–100 mA |
+
+| Setup | Estimated runtime |
+|---|---|
+| Always lit, no sensing | **~5 h** |
+| Presence sensing, lit ~20 % of the time | **~8 h** |
+| Presence sensing + Wi-Fi saver | **~10–11 h** |
+
+Note the radar itself costs about as much as the ESP32, which caps the benefit.
+For multi-day life you want a bigger pack (a 10000 mAh USB power bank gets you
+into the 24–30 h range) rather than a more aggressive sleep.
+
+### Powering it
+
+The MatrixPortal S3 has **no onboard LiPo charger or battery connector**, and
+the panel needs 5 V at up to a couple of amps on bright content. A bare 1S LiPo
+therefore needs a **boost converter rated ≥ 2 A** (plus a charger), or you can
+skip the loose-cell approach entirely and run it from a USB-C power bank.
 
 ## Calendar sync (optional)
 
