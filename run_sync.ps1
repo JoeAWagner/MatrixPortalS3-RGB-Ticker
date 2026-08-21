@@ -21,8 +21,9 @@ if (Test-Path $config) {
     Write-Warning "sync.config.ps1 not found - relying on existing environment variables."
 }
 
-# Send the sync's own logging to a rotating file alongside this script.
-$env:SYNC_LOG = Join-Path $here 'calendar_sync.log'
+# Send the sync's own logging to a rotating file alongside this script, unless
+# a caller (e.g. the out-of-iCloud logon bootstrap) already chose a location.
+if (-not $env:SYNC_LOG) { $env:SYNC_LOG = Join-Path $here 'calendar_sync.log' }
 
 function Write-LauncherLog($msg) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  launcher  $msg" |

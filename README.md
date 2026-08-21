@@ -280,6 +280,20 @@ So the sync isn't a terminal you have to keep open:
 It runs hidden, logs to `calendar_sync.log` (rotating, next to the scripts), and
 only ever runs one copy at a time. Remove it with `install-startup.ps1 -Uninstall`.
 
+**If the project lives in a synced folder** (iCloud Drive, OneDrive, Dropbox),
+do not point the Startup shortcut at `run_sync.ps1` directly. At logon the sync
+service may not have mounted yet, so the shortcut's target does not exist and it
+fails silently. Use `bootstrap.example.ps1` instead:
+
+1. Copy `bootstrap.example.ps1` and `sync.config.ps1` to a **local** folder,
+   e.g. `C:\dev	icker`, and edit `$project` to point at the project folder.
+2. Point the Startup shortcut at that copy.
+
+The bootstrap always exists at logon, waits (up to 20 minutes) for the project
+folder to appear, logs what it is waiting for, and only then hands off to
+`run_sync.ps1`. Keeping `sync.config.ps1` there too means your Apple
+app-specific password is never uploaded to a cloud service.
+
 **Prefer a real Scheduled Task?** `install-task.ps1` registers one (runs at logon,
 auto-restarts on failure) — but on many machines creating a task needs an
 **elevated** PowerShell ("Run as administrator"). If it can't, it now tells you so
