@@ -51,4 +51,37 @@ const sendWeather = (cfg, text, icon) =>
 
 const sendRaw = (cfg, path) => send(cfg, path);
 
-module.exports = { send, sendMessage, sendWeather, sendRaw };
+/**
+ * Ask the ticker what time it thinks it is. Returns null when unreachable -
+ * a missing clock reading is not an error worth surfacing on every poll.
+ */
+async function getTime(cfg, { timeoutMs = 5000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const nc = Math.floor(Math.random() * 99999);
+    const res = await fetch(`http://${cfg.tickerIp}/&TM=1/&nc=${nc}`, {
+      headers: { Authorization: authHeader(cfg.tickerUser, cfg.tickerPass) },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (typeof j.epoch !== 'number') return null;
+    // Drift is measured against this machine, which is the reference the user
+    // is comparing against anyway.
+    j.driftSec = j.epoch - Math.floor(Date.now() / 1000);
+    j.readAt = Date.now();
+    return j;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Push this machine's clock to the ticker. */
+function setTime(cfg) {
+  return send(cfg, `/&ST=${Math.floor(Date.now() / 1000)}`);
+}
+
+module.exports = { send, sendMessage, sendWeather, sendRaw, getTime, setTime };

@@ -22,6 +22,7 @@
 #include <math.h>
 #include <Preferences.h>
 #include <time.h>
+#include <sys/time.h>
 #include <Adafruit_Protomatter.h>
 
 // Credentials live in a separate, gitignored file. Copy
@@ -34,7 +35,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.9.2"
+#define FW_VERSION   "1.10.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -264,6 +265,8 @@ char curMessage[BUF_SIZE];
 char newMessage[BUF_SIZE];
 bool newMessageAvailable = false;
 bool checkRequested      = false;   // web UI asked for a GitHub update check
+bool timeRequested       = false;   // a client asked what time we think it is
+bool timeManuallySet     = false;   // clock came from /&ST=, not from NTP
 
 #define WX_SIZE 64
 char weatherMsg[WX_SIZE] = "";      // top-row weather, pushed via /&WX=
@@ -1075,6 +1078,27 @@ void getData(const char *buf)
   // Update check: /&CHK=1  -> respond with JSON version comparison
   p = strstr(buf, "/&CHK=");
   if (p) checkRequested = true;
+
+  // Set the clock from a client: /&ST=<unix epoch seconds, UTC>
+  // NTP is the normal source; this is the fallback for when the device has no
+  // route to an NTP server but a desktop app can still reach it.
+  p = strstr(buf, "/&ST=");
+  if (p) {
+    long long epoch = strtoll(p + 5, nullptr, 10);
+    if (epoch > 1700000000LL) {           // sanity: must be past Nov 2023
+      struct timeval tv;
+      tv.tv_sec  = (time_t)epoch;
+      tv.tv_usec = 0;
+      settimeofday(&tv, nullptr);
+      timeManuallySet = true;
+      layoutLines();                       // clock rows may become valid now
+      PRINT("\nClock set from client: ", (long)epoch);
+    }
+  }
+
+  // Report the time we think it is: /&TM=1 -> JSON
+  p = strstr(buf, "/&TM=");
+  if (p) timeRequested = true;
 }
 
 // ============================================================
@@ -1159,6 +1183,7 @@ void handleWiFi(void)
     lineIdx = 0;
     requestCaptured = false;
     checkRequested  = false;   // reset per request; getData re-sets if /&CHK= present
+    timeRequested   = false;
     state = S_WAIT_CONN;
     break;
 
@@ -1227,6 +1252,27 @@ void handleWiFi(void)
         "<p style='color:#444'>Enter your LED Ticker credentials.</p>"
         "</body></html>"
       );
+    } else if (timeRequested) {
+      // Small JSON so a client can compare our clock against its own.
+      timeRequested = false;
+      time_t nowUtc = time(nullptr);
+      struct tm lt;
+      bool haveLocal = getLocalTime(&lt, 0);
+      char localStr[32] = "";
+      if (haveLocal) strftime(localStr, sizeof(localStr), "%Y-%m-%d %H:%M:%S", &lt);
+
+      client.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
+      client.print("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+      client.print("{\"epoch\":");
+      client.print((long)nowUtc);
+      client.print(",\"valid\":");
+      client.print(timeValid() ? "true" : "false");
+      client.print(",\"source\":\"");
+      client.print(timeManuallySet ? "manual" : "ntp");
+      client.print("\",\"local\":\"");
+      client.print(localStr);
+      client.print("\",\"tz\":\"" TZ_INFO "\"}");
+
     } else if (checkRequested) {
       // Update check: fetch version.txt from GitHub and reply with JSON.
       checkRequested = false;

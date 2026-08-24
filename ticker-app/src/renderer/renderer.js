@@ -62,6 +62,40 @@ function render(s) {
   $('wxMeta').textContent = s.weather && s.weather.place ? s.weather.place : '';
   $('calList').textContent = (s.calendars && s.calendars.length) ? s.calendars.join(', ') : '\u2014';
   $('lastSync').textContent = s.lastSync ? 'updated ' + fmtTime(s.lastSync) : '';
+
+  renderClock(s.deviceTime);
+}
+
+// Offer the Sync button only when the clock is actually wrong. A drift of a
+// second or two is just round-trip latency, not a problem worth fixing.
+var DRIFT_WARN_SEC = 30;
+
+function renderClock(t) {
+  var btn = $('btnSyncTime');
+  if (!t) {
+    $('devTime').textContent = '\u2014';
+    $('devTimeMeta').textContent = 'ticker clock unavailable';
+    $('drift').textContent = '\u2014';
+    btn.style.display = 'none';
+    return;
+  }
+
+  $('devTime').textContent = t.local || new Date(t.epoch * 1000).toLocaleString();
+
+  var bits = ['source: ' + (t.source === 'manual' ? 'set from this PC' : 'NTP')];
+  if (!t.valid) bits.push('clock not yet set');
+  $('devTimeMeta').textContent = bits.join('  \u00b7  ');
+
+  var d = t.driftSec;
+  var mag = Math.abs(d);
+  var human = mag < 90 ? mag + 's'
+    : mag < 5400 ? Math.round(mag / 60) + ' min'
+      : Math.round(mag / 3600) + ' h';
+  $('drift').textContent = d === 0 ? 'in sync' : (d > 0 ? '+' : '-') + human;
+
+  var bad = mag >= DRIFT_WARN_SEC || !t.valid;
+  $('drift').style.color = bad ? 'var(--err)' : 'var(--txt)';
+  btn.style.display = bad ? '' : 'none';
 }
 
 const FIELDS = ['tickerIp', 'tickerUser', 'tickerPass', 'appleId', 'appPassword',
@@ -101,6 +135,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.ticker.onState(render);
 
   $('btnSyncNow').addEventListener('click', () => window.ticker.syncNow());
+  $('btnSyncTime').addEventListener('click', async () => {
+    $('btnSyncTime').disabled = true;
+    await window.ticker.syncDeviceTime();
+    $('btnSyncTime').disabled = false;
+  });
   $('btnToggle').addEventListener('click', () => (running ? window.ticker.stopSync() : window.ticker.startSync()));
 
   $('btnSend').addEventListener('click', () => {

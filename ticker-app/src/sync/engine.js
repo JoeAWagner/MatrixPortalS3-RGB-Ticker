@@ -53,7 +53,7 @@ class SyncEngine extends EventEmitter {
     this.source = null;
     this.state = {
       running: false, deviceOnline: null, lastError: null,
-      current: null, next: null, weather: null, calendars: [],
+      current: null, next: null, weather: null, calendars: [], deviceTime: null,
       lastSync: null, lastMessageSent: null,
       paused: false, pausedUntil: null,
     };
@@ -105,6 +105,7 @@ class SyncEngine extends EventEmitter {
     if (beat) this._heartbeatDue = Date.now() + (cfg.heartbeatMins || 10) * 60000;
 
     await this.tickWeather(cfg, beat);
+    await this.tickDeviceTime(cfg);
 
     if (this.state.paused && Date.now() < this.state.pausedUntil) return;
     if (this.state.paused) {
@@ -135,6 +136,25 @@ class SyncEngine extends EventEmitter {
     } catch (err) {
       this.log('warn', `Weather lookup failed: ${err.message}`);
     }
+  }
+
+  // Read the ticker's own clock so the UI can show drift. Silent on failure:
+  // if the panel is unreachable the message push already reports that.
+  async tickDeviceTime(cfg) {
+    const t = await device.getTime(cfg);
+    this.patch({ deviceTime: t });
+  }
+
+  async syncDeviceTime() {
+    const cfg = this.settings.get();
+    const res = await device.setTime(cfg);
+    if (res.ok) {
+      this.log('info', 'Pushed this machine clock to the ticker');
+      await this.tickDeviceTime(cfg);
+    } else {
+      this.log('warn', `Time sync failed: ${res.reason}`);
+    }
+    return res;
   }
 
   async tickCalendar(cfg, now, beat) {

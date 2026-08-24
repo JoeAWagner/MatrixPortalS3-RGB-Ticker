@@ -112,6 +112,8 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&WI=`  | Weather icon 0-6 (`-1` none): sun, cloud, partly, rain, snow, storm, fog | `/&WI=0` |
 | `/&TH=`  | Color theme 0–5 (sunset, amber, matrix, siren, neon, rainbow) | `/&TH=0` |
 | `/&CHK=` | Check GitHub for a newer version; returns JSON | `/&CHK=1` |
+| `/&TM=`  | Report the device clock as JSON (epoch, local, source, tz) | `/&TM=1` |
+| `/&ST=`  | Set the device clock from a Unix epoch (UTC seconds) | `/&ST=1787582340` |
 
 Messages are split on `|` into stacked rows, so
 `/&MSG=NOW:%20Lunch|NEXT:%201:00%20PM%20Review/&` renders as two lines.
@@ -209,6 +211,13 @@ npm install
 npm start          # run from source
 npm run dist       # build a Windows installer into dist/
 ```
+
+The **Status** tab also shows the ticker's own clock alongside its drift from
+this machine. The panel gets its time over NTP, so it is normally within a
+second or two; a **Sync time** button appears only once drift exceeds 30 s (or
+the clock was never set), and pushes this machine's time via `/&ST=`. That
+matters for the idle clock fallback and the night-dimming schedule, both of
+which depend on the device knowing what time it is.
 
 On first run it imports credentials from an existing `sync.config.ps1`, so
 upgrading from the script version needs no retyping. Settings live in
