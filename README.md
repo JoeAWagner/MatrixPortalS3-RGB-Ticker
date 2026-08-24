@@ -113,6 +113,7 @@ All control is plain `GET` requests with Basic Auth, so it's easy to script.
 | `/&TH=`  | Color theme 0–5 (sunset, amber, matrix, siren, neon, rainbow) | `/&TH=0` |
 | `/&CHK=` | Check GitHub for a newer version; returns JSON | `/&CHK=1` |
 | `/&TM=`  | Report the device clock as JSON (epoch, local, source, tz) | `/&TM=1` |
+| `/&CFG=` | Dump every display setting plus live radar state as JSON | `/&CFG=1` |
 | `/&ST=`  | Set the device clock from a Unix epoch (UTC seconds) | `/&ST=1787582340` |
 
 Messages are split on `|` into stacked rows, so

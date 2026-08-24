@@ -117,6 +117,73 @@ function collectSettings() {
   return out;
 }
 
+
+// ---- panel settings (read from and written to the ticker) ----------------
+// Sliders show a formatted value, so each field carries how to render itself.
+var DEVICE_FIELDS = {
+  th: { el: 'd_th' },
+  ts: { el: 'd_ts' },
+  sd: { el: 'd_sd' },
+  cl: { el: 'd_cl' },
+  br: { el: 'd_br', out: 'd_br_v', fmt: function (v) { return v + '%'; } },
+  lg: { el: 'd_lg', out: 'd_lg_v', fmt: function (v) { return v + ' px'; } },
+  sp: { el: 'd_sp', out: 'd_sp_v', fmt: function (v) { return v + ' ms'; } },
+  pk: { el: 'd_pk', out: 'd_pk_v', fmt: function (v) { return (v / 1000).toFixed(2) + ' s'; } },
+  nb: { el: 'd_nb', out: 'd_nb_v', fmt: function (v) { return v + '%'; } },
+  pd: { el: 'd_pd', out: 'd_pd_v', fmt: function (v) { return Number(v) === 0 ? 'any' : (v / 1000).toFixed(2) + ' m'; } },
+  ph: { el: 'd_ph', out: 'd_ph_v', fmt: function (v) { return v + ' s'; } },
+  ns: { el: 'd_ns' },
+  ne: { el: 'd_ne' },
+  sk: { el: 'd_sk', bool: true },
+  nd: { el: 'd_nd', bool: true },
+  pr: { el: 'd_pr', bool: true },
+  wp: { el: 'd_wp', bool: true },
+};
+
+function paintFieldValue(key) {
+  var f = DEVICE_FIELDS[key];
+  if (!f || !f.out) return;
+  $(f.out).textContent = f.fmt($(f.el).value);
+}
+
+function fillDeviceConfig(c) {
+  if (!c) {
+    $('cfgMeta').textContent = 'ticker unreachable';
+    $('radarStat').textContent = '';
+    return;
+  }
+  Object.keys(DEVICE_FIELDS).forEach(function (key) {
+    var f = DEVICE_FIELDS[key];
+    if (c[key] === undefined) return;
+    if (f.bool) $(f.el).checked = Number(c[key]) === 1;
+    else $(f.el).value = c[key];
+    paintFieldValue(key);
+  });
+  $('cfgMeta').textContent = 'firmware v' + c.ver;
+
+  var radar = Number(c.frames) === 0
+    ? 'No LD2450 data - check wiring (sensor TX to board RX/GPIO8) and 5V power.'
+    : 'Radar OK, ' + c.frames + ' frames  ·  ' +
+      (Number(c.seen) ? 'person detected' : 'no one detected') +
+      (Number(c.mm) ? '  ·  nearest ' + c.mm + ' mm' : '');
+  $('radarStat').textContent = radar + '   Panel: ' +
+    (Number(c.panel) ? 'on' : 'asleep') + ', ' + c.rows + ' row(s) drawn';
+}
+
+function collectDeviceConfig() {
+  var out = {};
+  Object.keys(DEVICE_FIELDS).forEach(function (key) {
+    var f = DEVICE_FIELDS[key];
+    out[key] = f.bool ? ($(f.el).checked ? 1 : 0) : Number($(f.el).value);
+  });
+  return out;
+}
+
+async function refreshDeviceConfig() {
+  $('cfgMeta').textContent = 'reading...';
+  fillDeviceConfig(await window.ticker.getDeviceConfig());
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   PRESETS.forEach((p) => {
     const b = document.createElement('button');
@@ -149,14 +216,18 @@ window.addEventListener('DOMContentLoaded', async () => {
   $('msgInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnSend').click(); });
   $('btnBlank').addEventListener('click', () => window.ticker.sendMessage('BLANK'));
 
-  $('bright').addEventListener('input', (e) => { $('brightVal').textContent = e.target.value; });
-  $('btnApply').addEventListener('click', () =>
-    window.ticker.sendRaw('/&TH=' + $('theme').value + '/&BR=' + $('bright').value));
-
-  $('btnOpenWeb').addEventListener('click', async () => {
-    const cfg = await window.ticker.getSettings();
-    addLog({ level: 'info', at: new Date().toISOString(), message: 'Ticker UI: http://' + cfg.tickerIp + '/' });
+  Object.keys(DEVICE_FIELDS).forEach(function (key) {
+    var f = DEVICE_FIELDS[key];
+    if (f.out) $(f.el).addEventListener('input', function () { paintFieldValue(key); });
   });
+  $('btnCfgRefresh').addEventListener('click', refreshDeviceConfig);
+  $('btnCfgApply').addEventListener('click', async () => {
+    $('btnCfgApply').disabled = true;
+    await window.ticker.applyDeviceConfig(collectDeviceConfig());
+    await refreshDeviceConfig();          // show what the device actually took
+    $('btnCfgApply').disabled = false;
+  });
+  refreshDeviceConfig();
 
   $('btnTestDevice').addEventListener('click', () => window.ticker.testDevice());
   $('btnTestCal').addEventListener('click', () => window.ticker.testCalendar());

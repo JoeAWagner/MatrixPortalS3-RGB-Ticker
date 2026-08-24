@@ -178,6 +178,19 @@ ipcMain.handle('saveSettings', (_e, patch) => {
 });
 
 ipcMain.handle('syncNow', () => engine.tick());
+ipcMain.handle('syncDeviceTime', () => engine.syncDeviceTime());
+
+ipcMain.handle('getDeviceConfig', () => device.getConfig(settings.get()));
+
+ipcMain.handle('applyDeviceConfig', async (_e, values) => {
+  const res = await device.applyConfig(settings.get(), values);
+  pushLog({
+    level: res.ok ? 'info' : 'warn',
+    message: res.ok ? 'Panel settings applied' : `Applying panel settings failed: ${res.reason}`,
+    at: new Date().toISOString(),
+  });
+  return res;
+});
 ipcMain.handle('startSync', () => engine.start());
 ipcMain.handle('stopSync', () => engine.stop());
 

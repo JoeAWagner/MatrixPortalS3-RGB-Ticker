@@ -84,4 +84,47 @@ function setTime(cfg) {
   return send(cfg, `/&ST=${Math.floor(Date.now() / 1000)}`);
 }
 
-module.exports = { send, sendMessage, sendWeather, sendRaw, getTime, setTime };
+/** Read every display setting the firmware exposes. null when unreachable. */
+async function getConfig(cfg, { timeoutMs = 6000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const nc = Math.floor(Math.random() * 99999);
+    const res = await fetch(`http://${cfg.tickerIp}/&CFG=1/&nc=${nc}`, {
+      headers: { Authorization: authHeader(cfg.tickerUser, cfg.tickerPass) },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return typeof j.ver === 'string' ? j : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Firmware parameter names, in the order the device parses them.
+const PARAM = {
+  th: 'TH', br: 'BR', ts: 'TS', lg: 'LG', sp: 'SP', pk: 'PK',
+  sk: 'SK', cl: 'CL', nd: 'ND', nb: 'NB', ns: 'NS', ne: 'NE',
+  pr: 'PR', pd: 'PD', ph: 'PH', wp: 'WP',
+};
+
+/** Push a settings object (same keys as getConfig) to the ticker. */
+function applyConfig(cfg, values) {
+  let path = '';
+  for (const [key, name] of Object.entries(PARAM)) {
+    if (values[key] === undefined || values[key] === null) continue;
+    path += `/&${name}=${values[key]}`;
+  }
+  // Direction is a letter on the wire, not a number.
+  if (values.sd !== undefined) path += `/&SD=${Number(values.sd) ? 'R' : 'L'}`;
+  if (!path) return Promise.resolve({ ok: true });
+  return send(cfg, path);
+}
+
+module.exports = {
+  send, sendMessage, sendWeather, sendRaw,
+  getTime, setTime, getConfig, applyConfig,
+};

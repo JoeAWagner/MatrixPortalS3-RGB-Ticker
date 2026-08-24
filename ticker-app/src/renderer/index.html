@@ -89,23 +89,76 @@
         <div class="presets" id="presets"></div>
       </div>
       <div class="card">
-        <h2>Quick controls</h2>
-        <div class="row">
-          <label>Theme</label>
-          <select id="theme">
+        <div class="row" style="margin-top:0">
+          <h2 style="margin:0">Panel settings</h2>
+          <span class="spacer"></span>
+          <span class="meta" id="cfgMeta"></span>
+          <button class="btn" id="btnCfgRefresh">Refresh</button>
+          <button class="btn primary" id="btnCfgApply">Apply to ticker</button>
+        </div>
+
+        <div class="field"><label>Theme</label>
+          <select id="d_th">
             <option value="0">Sunset</option><option value="1">Amber</option>
             <option value="2">Matrix</option><option value="3">Siren</option>
             <option value="4">Neon</option><option value="5">Rainbow</option>
           </select>
-          <label>Brightness</label>
-          <input type="range" id="bright" min="5" max="100" value="30">
-          <span class="meta" id="brightVal">30</span>
         </div>
-        <div class="row">
-          <button class="btn" id="btnApply">Apply</button>
-          <button class="btn" id="btnOpenWeb">Open ticker web UI</button>
+        <div class="field"><label>Brightness</label>
+          <input type="range" id="d_br" min="1" max="100"><span class="cv" id="d_br_v"></span></div>
+        <div class="field"><label>Text size</label>
+          <select id="d_ts">
+            <option value="1">S - 4 rows</option><option value="2">M</option>
+            <option value="3">L</option><option value="4">XL - full height</option>
+          </select>
         </div>
+        <div class="field"><label>Line gap</label>
+          <input type="range" id="d_lg" min="0" max="6"><span class="cv" id="d_lg_v"></span></div>
+        <div class="field"><label>Scroll speed</label>
+          <input type="range" id="d_sp" min="5" max="200"><span class="cv" id="d_sp_v"></span></div>
+        <div class="field"><label>Park time</label>
+          <input type="range" id="d_pk" min="0" max="10000" step="250"><span class="cv" id="d_pk_v"></span></div>
+        <div class="field"><label>Direction</label>
+          <select id="d_sd"><option value="0">Left</option><option value="1">Right</option></select></div>
+        <div class="field"><label>Sticky labels</label>
+          <input type="checkbox" id="d_sk">
+          <span class="meta">pin NOW: / NEXT: while the text scrolls</span></div>
       </div>
+
+      <div class="card">
+        <h2>Clock &amp; night dimming</h2>
+        <div class="field"><label>Clock</label>
+          <select id="d_cl">
+            <option value="0">Off</option>
+            <option value="1">Always show a row</option>
+            <option value="2">Only when idle</option>
+          </select>
+        </div>
+        <div class="field"><label>Night dimming</label><input type="checkbox" id="d_nd"></div>
+        <div class="field"><label>Night level</label>
+          <input type="range" id="d_nb" min="1" max="100"><span class="cv" id="d_nb_v"></span></div>
+        <div class="field"><label>Night hours</label>
+          <input type="number" id="d_ns" min="0" max="23" style="flex:none;width:70px">
+          <span class="meta">to</span>
+          <input type="number" id="d_ne" min="0" max="23" style="flex:none;width:70px">
+          <span class="meta">24-hour</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Presence sensing (LD2450)</h2>
+        <div class="field"><label>Sensing</label>
+          <input type="checkbox" id="d_pr">
+          <span class="meta">sleep the panel when nobody is nearby</span></div>
+        <div class="field"><label>Wake range</label>
+          <input type="range" id="d_pd" min="0" max="8000" step="250"><span class="cv" id="d_pd_v"></span></div>
+        <div class="field"><label>Stay lit</label>
+          <input type="range" id="d_ph" min="5" max="600" step="5"><span class="cv" id="d_ph_v"></span></div>
+        <div class="field"><label>Wi-Fi saver</label>
+          <input type="checkbox" id="d_wp">
+          <span class="meta">modem sleep; saves power, adds a little latency</span></div>
+        <div class="meta" id="radarStat" style="margin-top:10px"></div>
+      </div>
+
     </section>
 
     <section class="panel" id="tab-settings">

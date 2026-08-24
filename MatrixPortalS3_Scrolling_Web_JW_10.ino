@@ -35,7 +35,7 @@
 // FW_VERSION is the version built into this firmware.
 // version.txt in the repo holds the latest published version; the
 // "Check for Updates" button compares the two.
-#define FW_VERSION   "1.10.0"
+#define FW_VERSION   "1.11.0"
 #define VERSION_URL  "https://raw.githubusercontent.com/JoeAWagner/MatrixPortalS3-RGB-Ticker/main/version.txt"
 #define REPO_URL     "https://github.com/JoeAWagner/MatrixPortalS3-RGB-Ticker"
 
@@ -266,6 +266,7 @@ char newMessage[BUF_SIZE];
 bool newMessageAvailable = false;
 bool checkRequested      = false;   // web UI asked for a GitHub update check
 bool timeRequested       = false;   // a client asked what time we think it is
+bool cfgRequested        = false;   // a client asked for the full settings dump
 bool timeManuallySet     = false;   // clock came from /&ST=, not from NTP
 
 #define WX_SIZE 64
@@ -1099,6 +1100,12 @@ void getData(const char *buf)
   // Report the time we think it is: /&TM=1 -> JSON
   p = strstr(buf, "/&TM=");
   if (p) timeRequested = true;
+
+  // Dump every display setting as JSON: /&CFG=1
+  // The web page injects these into its own HTML, which is fine for a browser
+  // but useless to another client. This is the machine-readable version.
+  p = strstr(buf, "/&CFG=");
+  if (p) cfgRequested = true;
 }
 
 // ============================================================
@@ -1184,6 +1191,7 @@ void handleWiFi(void)
     requestCaptured = false;
     checkRequested  = false;   // reset per request; getData re-sets if /&CHK= present
     timeRequested   = false;
+    cfgRequested    = false;
     state = S_WAIT_CONN;
     break;
 
@@ -1252,6 +1260,85 @@ void handleWiFi(void)
         "<p style='color:#444'>Enter your LED Ticker credentials.</p>"
         "</body></html>"
       );
+    } else if (cfgRequested) {
+      cfgRequested = false;
+      client.print("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n");
+      client.print("Cache-Control: no-store\r\nConnection: close\r\n\r\n");
+
+      client.print("{\"ver\":\"" FW_VERSION "\",");
+      client.print("\"sp\":");
+      client.print(scrollSpeed);
+      client.print(",");
+      client.print("\"br\":");
+      client.print(brightnessPct);
+      client.print(",");
+      client.print("\"ts\":");
+      client.print(textSize);
+      client.print(",");
+      client.print("\"lg\":");
+      client.print(lineGap);
+      client.print(",");
+      client.print("\"pk\":");
+      client.print(parkMs);
+      client.print(",");
+      client.print("\"sk\":");
+      client.print(stickyLabels ? 1 : 0);
+      client.print(",");
+      client.print("\"sd\":");
+      client.print(scrollDir == DIR_RIGHT ? 1 : 0);
+      client.print(",");
+      client.print("\"th\":");
+      client.print(themeIdx);
+      client.print(",");
+      client.print("\"cm\":");
+      client.print(colorMode == CM_RAINBOW ? 1 : 0);
+      client.print(",");
+      client.print("\"cl\":");
+      client.print(clockMode);
+      client.print(",");
+      client.print("\"nd\":");
+      client.print(nightDim ? 1 : 0);
+      client.print(",");
+      client.print("\"nb\":");
+      client.print(nightBrightPct);
+      client.print(",");
+      client.print("\"ns\":");
+      client.print(nightStartHr);
+      client.print(",");
+      client.print("\"ne\":");
+      client.print(nightEndHr);
+      client.print(",");
+      client.print("\"pr\":");
+      client.print(presenceEnabled ? 1 : 0);
+      client.print(",");
+      client.print("\"pd\":");
+      client.print(presenceRangeMm);
+      client.print(",");
+      client.print("\"ph\":");
+      client.print(presenceHoldSec);
+      client.print(",");
+      client.print("\"wp\":");
+      client.print(wifiPowerSave ? 1 : 0);
+      client.print(",");
+      client.print("\"panel\":");
+      client.print(displayOn ? 1 : 0);
+      client.print(",");
+      client.print("\"frames\":");
+      client.print((unsigned long)radarFrames);
+      client.print(",");
+      client.print("\"seen\":");
+      client.print(targetSeen ? 1 : 0);
+      client.print(",");
+      client.print("\"mm\":");
+      client.print(lastTargetMm);
+      client.print(",");
+      client.print("\"wi\":");
+      client.print((int)weatherIcon);
+      client.print(",");
+      client.print("\"rows\":");
+      client.print(numLines);
+      client.print("}");
+
     } else if (timeRequested) {
       // Small JSON so a client can compare our clock against its own.
       timeRequested = false;
