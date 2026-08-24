@@ -107,6 +107,27 @@ class CalendarSource {
   }
 }
 
+// rrule.js returns occurrences whose UTC fields encode the intended WALL
+// CLOCK time, not a real UTC instant. Reading them directly shifts every
+// recurring event by the local UTC offset - a 2:30 PM meeting shows up as
+// 10:30 AM in US Eastern. Rebuild the date from those fields in local time,
+// which also picks up the correct DST offset for that particular date.
+//
+// This assumes the event's timezone matches this machine's, which is true for
+// your own calendar; a meeting authored in another timezone is approximate.
+function wallClock(d) {
+  return new Date(
+    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+    d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(),
+  );
+}
+
+// node-ical keys exdate/recurrences by local calendar day.
+function dayKey(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 // Push an event (and any recurrences inside the window) into `out`.
 function collectOccurrences(item, windowStart, windowEnd, out) {
   const summary = String(item.summary || '(busy)').trim();
@@ -125,21 +146,36 @@ function collectOccurrences(item, windowStart, windowEnd, out) {
   }
 
   // Recurring: expand within the window, honoring EXDATE and overrides.
-  const dates = item.rrule.between(windowStart, windowEnd, true);
-  for (const d of dates) {
-    const key = d.toISOString().slice(0, 10);
-    if (item.exdate && item.exdate[key]) continue;
+  // Widen the query window so an occurrence near the edge is not lost to the
+  // wall-clock correction shifting it by up to a day.
+  const pad = 36 * 3600 * 1000;
+  const raw = item.rrule.between(
+    new Date(windowStart.getTime() - pad),
+    new Date(windowEnd.getTime() + pad),
+    true,
+  );
 
-    const override = item.recurrences && item.recurrences[key];
+  for (const r of raw) {
+    const start = wallClock(r);
+    const key = dayKey(start);
+    if (item.exdate && (item.exdate[key] || item.exdate[r.toISOString().slice(0, 10)])) continue;
+
+    const override = item.recurrences
+      && (item.recurrences[key] || item.recurrences[r.toISOString().slice(0, 10)]);
+
     if (override) {
+      // Overrides are parsed VEVENTs with real Dates, so no correction here.
       out.push({
         start: new Date(override.start),
         end: new Date(override.end || override.start),
         summary: String(override.summary || summary).trim(),
       });
-    } else {
-      out.push({ start: new Date(d), end: new Date(d.getTime() + durationMs), summary });
+      continue;
     }
+
+    const end = new Date(start.getTime() + durationMs);
+    if (end < windowStart || start > windowEnd) continue;   // re-apply the real window
+    out.push({ start, end, summary });
   }
 }
 

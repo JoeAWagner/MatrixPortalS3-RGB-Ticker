@@ -3,6 +3,7 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } = require('electron');
 const path = require('path');
 const { Settings } = require('./settings');
+const { panelIcon } = require('./trayicon');
 const { SyncEngine } = require('./sync/engine');
 const device = require('./sync/device');
 
@@ -82,6 +83,7 @@ function createWindow() {
     minHeight: 560,
     show: !settings.get().startMinimized,
     autoHideMenuBar: true,
+    icon: nativeImage.createFromBuffer(panelIcon('#ffb000')),
     backgroundColor: '#0b0b0d',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -104,13 +106,13 @@ function showWindow() {
 }
 
 function trayIcon(state) {
-  // 16x16 dot: amber = running, red = device unreachable, grey = stopped.
-  const color = !state || !state.running ? '#666666'
-    : state.deviceOnline === false ? '#d33'
+  // amber = running, red = ticker unreachable, grey = stopped.
+  // Must be a PNG: nativeImage cannot decode SVG, and silently returns an
+  // empty image, which is why the tray slot was blank.
+  const color = !state || !state.running ? '#8a8a92'
+    : state.deviceOnline === false ? '#e05a5a'
       : '#ffb000';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">
-    <rect x="1" y="4" width="14" height="8" rx="2" fill="${color}"/></svg>`;
-  return nativeImage.createFromDataURL('data:image/svg+xml;base64,' + Buffer.from(svg).toString('base64'));
+  return nativeImage.createFromBuffer(panelIcon(color));
 }
 
 function createTray() {
