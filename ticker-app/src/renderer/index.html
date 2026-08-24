@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+<title>Ticker Manager</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>TICKER MANAGER</h1>
+    <div class="statusbar">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">starting...</span>
+      <span class="spacer"></span>
+      <button id="btnSyncNow" class="btn">Sync now</button>
+      <button id="btnToggle" class="btn">Stop</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab on" data-tab="status">Status</button>
+    <button class="tab" data-tab="display">Display</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="log">Log</button>
+  </nav>
+
+  <main>
+    <section class="panel on" id="tab-status">
+      <div class="card">
+        <h2>On the panel now</h2>
+        <div class="preview" id="preview">&mdash;</div>
+        <div class="meta" id="previewMeta"></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Now</h2>
+          <div class="big" id="nowTitle">&mdash;</div>
+          <div class="meta" id="nowTime"></div>
+        </div>
+        <div class="card">
+          <h2>Up next</h2>
+          <div class="big" id="nextTitle">&mdash;</div>
+          <div class="meta" id="nextTime"></div>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Weather</h2>
+          <div class="big" id="wxText">&mdash;</div>
+          <div class="meta" id="wxMeta"></div>
+        </div>
+        <div class="card">
+          <h2>Calendars</h2>
+          <div class="meta" id="calList">&mdash;</div>
+          <div class="meta" id="lastSync"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="tab-display">
+      <div class="card">
+        <h2>Send a message</h2>
+        <input type="text" id="msgInput" placeholder="Type a message for the panel...">
+        <div class="row">
+          <button class="btn primary" id="btnSend">Send</button>
+          <button class="btn danger" id="btnBlank">Blank</button>
+          <span class="meta">Use <code>|</code> to split rows</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Presets</h2>
+        <div class="presets" id="presets"></div>
+      </div>
+      <div class="card">
+        <h2>Quick controls</h2>
+        <div class="row">
+          <label>Theme</label>
+          <select id="theme">
+            <option value="0">Sunset</option><option value="1">Amber</option>
+            <option value="2">Matrix</option><option value="3">Siren</option>
+            <option value="4">Neon</option><option value="5">Rainbow</option>
+          </select>
+          <label>Brightness</label>
+          <input type="range" id="bright" min="5" max="100" value="30">
+          <span class="meta" id="brightVal">30</span>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnApply">Apply</button>
+          <button class="btn" id="btnOpenWeb">Open ticker web UI</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="tab-settings">
+      <div class="card">
+        <h2>Ticker</h2>
+        <div class="field"><label>Address</label><input id="tickerIp" placeholder="ticker.local"></div>
+        <div class="field"><label>Username</label><input id="tickerUser"></div>
+        <div class="field"><label>Password</label><input id="tickerPass" type="password"></div>
+        <div class="row"><button class="btn" id="btnTestDevice">Test connection</button></div>
+      </div>
+      <div class="card">
+        <h2>iCloud</h2>
+        <div class="field"><label>Apple ID</label><input id="appleId" placeholder="you@icloud.com"></div>
+        <div class="field"><label>App password</label><input id="appPassword" type="password" placeholder="xxxx-xxxx-xxxx-xxxx"></div>
+        <div class="field"><label>Calendars</label><input id="calendars" placeholder="Calendar,Work,Home (blank = all)"></div>
+        <div class="row"><button class="btn" id="btnTestCal">Test iCloud</button></div>
+        <p class="meta">Create an app-specific password at appleid.apple.com &rarr; Sign-In &amp; Security.</p>
+      </div>
+      <div class="card">
+        <h2>Weather &amp; timing</h2>
+        <div class="field"><label>ZIP</label><input id="weatherZip"></div>
+        <div class="field"><label>Units</label>
+          <select id="weatherUnits"><option value="fahrenheit">Fahrenheit</option><option value="celsius">Celsius</option></select>
+        </div>
+        <div class="field"><label>Poll (s)</label><input id="pollSecs" type="number" min="15" max="900"></div>
+        <div class="field"><label>Weather (min)</label><input id="weatherMins" type="number" min="1" max="120"></div>
+      </div>
+      <div class="card">
+        <h2>App</h2>
+        <div class="field"><label>Start at login</label><input id="autoStart" type="checkbox"></div>
+        <div class="field"><label>Start minimized</label><input id="startMinimized" type="checkbox"></div>
+        <div class="row"><button class="btn primary" id="btnSave">Save settings</button><span class="meta" id="saveMsg"></span></div>
+      </div>
+    </section>
+
+    <section class="panel" id="tab-log">
+      <div class="card">
+        <div class="row"><h2>Activity</h2><span class="spacer"></span><button class="btn" id="btnClearLog">Clear</button></div>
+        <div class="log" id="log"></div>
+      </div>
+    </section>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>

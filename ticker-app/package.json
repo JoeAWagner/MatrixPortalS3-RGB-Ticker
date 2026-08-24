@@ -1,0 +1,26 @@
+{
+  "name": "ticker-app",
+  "version": "1.0.0",
+  "description": "Desktop manager and calendar sync for the Matrix Portal RGB ticker",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64"
+  },
+  "author": "Joe Wagner",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "node-ical": "^0.20.1",
+    "tsdav": "^2.1.2"
+  },
+  "build": {
+    "appId": "com.joewagner.tickerapp",
+    "productName": "Ticker Manager",
+    "files": ["src/**/*", "package.json"],
+    "win": { "target": "nsis" }
+  }
+}

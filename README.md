@@ -197,6 +197,38 @@ the panel needs 5 V at up to a couple of amps on bright content. A bare 1S LiPo
 therefore needs a **boost converter rated ≥ 2 A** (plus a charger), or you can
 skip the loose-cell approach entirely and run it from a USB-C power bank.
 
+## Ticker Manager (desktop app)
+
+`ticker-app/` is an Electron desktop app that replaces the Python + PowerShell
+sync. It runs in the system tray, shows what the panel is displaying, and
+handles the calendar and weather sync itself.
+
+```bash
+cd ticker-app
+npm install
+npm start          # run from source
+npm run dist       # build a Windows installer into dist/
+```
+
+On first run it imports credentials from an existing `sync.config.ps1`, so
+upgrading from the script version needs no retyping. Settings then live in
+`%APPDATA%/ticker-app/settings.json`.
+
+**Why replace the scripts?** Every outage this project hit came from the
+plumbing rather than the logic:
+
+| Failure | Cause | Gone because |
+|---|---|---|
+| Sync silently did nothing | `python` on PATH resolved to the Microsoft Store stub | No Python at all |
+| "I am Free" during meetings | caldav 2.0 dropped `vobject`, so every event failed to parse | Node CalDAV client, and parse failures count as failures |
+| Nothing started after reboot | Logon shortcut pointed into iCloud Drive, unmounted at logon | Electron registers its own login item; install it outside a synced folder |
+| Calendar froze while weather kept working | A stale CalDAV session was never rebuilt | A total-failure poll invalidates the session so the next poll reconnects |
+
+The app keeps the behaviours that were learned the hard way: weather refreshes
+independently of the calendar, "I am Free" is only shown when every calendar
+answers, the message is re-pushed on a heartbeat so a rebooted panel recovers,
+and an unreachable panel is logged once rather than every poll.
+
 ## Calendar sync (optional)
 
 `calendar_sync.py` polls iCloud CalDAV and shows what's on **now** and what's
