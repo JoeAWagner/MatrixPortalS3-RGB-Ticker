@@ -211,8 +211,14 @@ npm run dist       # build a Windows installer into dist/
 ```
 
 On first run it imports credentials from an existing `sync.config.ps1`, so
-upgrading from the script version needs no retyping. Settings then live in
-`%APPDATA%/ticker-app/settings.json`.
+upgrading from the script version needs no retyping. Settings live in
+`%APPDATA%/ticker-app/settings.json` and activity is logged to
+`%APPDATA%/ticker-app/ticker.log` (rotated at 1 MB) as well as the Log tab -
+a tray app with no log on disk is a black box the moment it stops working.
+
+Install the built `dist/Ticker Manager Setup *.exe` rather than running from
+source: a packaged install lives outside the synced folder, so the login item
+Electron registers cannot point at a path that has not mounted yet.
 
 **Why replace the scripts?** Every outage this project hit came from the
 plumbing rather than the logic:

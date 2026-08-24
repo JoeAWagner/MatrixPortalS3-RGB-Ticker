@@ -14,11 +14,31 @@ let quitting = false;
 
 const LOG_CAP = 500;
 const logBuffer = [];
+let logFile = null;
+
+// A tray app with no log is a black box: when it silently stops working the
+// only way to tell is to guess. Everything the UI shows also goes to disk.
+function initFileLog() {
+  logFile = path.join(app.getPath('userData'), 'ticker.log');
+  try {
+    const fs = require('fs');
+    if (fs.existsSync(logFile) && fs.statSync(logFile).size > 1024 * 1024) {
+      fs.renameSync(logFile, logFile + '.1');   // keep one previous file
+    }
+  } catch { /* logging must never break startup */ }
+}
 
 function pushLog(entry) {
   logBuffer.push(entry);
   if (logBuffer.length > LOG_CAP) logBuffer.shift();
   if (win && !win.isDestroyed()) win.webContents.send('log', entry);
+  if (logFile) {
+    try {
+      const line = `${new Date(entry.at).toISOString()}  ${entry.level.toUpperCase().padEnd(5)}  ${entry.message}
+`;
+      require('fs').appendFileSync(logFile, line, 'utf8');
+    } catch { /* ignore */ }
+  }
 }
 
 // Single instance: a second launch just surfaces the existing window.
@@ -30,7 +50,9 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function init() {
+  initFileLog();
   settings = new Settings(app.getPath('userData'));
+  pushLog({ level: 'info', message: `Ticker Manager ${app.getVersion()} starting (packaged=${app.isPackaged})`, at: new Date().toISOString() });
   if (settings.importedFrom) {
     pushLog({ level: 'info', message: `Imported settings from ${settings.importedFrom}`, at: new Date().toISOString() });
   }
@@ -140,6 +162,7 @@ app.on('before-quit', () => { quitting = true; if (engine) engine.stop(); });
 // ---- IPC ----------------------------------------------------------------
 ipcMain.handle('getState', () => ({ ...engine.state, logs: logBuffer.slice(-200) }));
 ipcMain.handle('getSettings', () => settings.get());
+ipcMain.handle('getLogPath', () => logFile);
 
 ipcMain.handle('saveSettings', (_e, patch) => {
   const before = settings.get();
