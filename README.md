@@ -230,6 +230,12 @@ Install the built `dist/Ticker Manager Setup *.exe` rather than running from
 source: a packaged install lives outside the synced folder, so the login item
 Electron registers cannot point at a path that has not mounted yet.
 
+**Placeholder events.** A standing block such as a daily *Lunch* would always
+be the nearest upcoming item and permanently mask the real next meeting. The
+**Skip for Up next** setting (comma-separated, default `Lunch`) keeps such
+titles out of the NEXT row while still showing them as NOW when they are
+actually happening.
+
 **Why replace the scripts?** Every outage this project hit came from the
 plumbing rather than the logic:
 

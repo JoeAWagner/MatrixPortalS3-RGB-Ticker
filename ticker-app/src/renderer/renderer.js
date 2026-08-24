@@ -99,7 +99,7 @@ function renderClock(t) {
 }
 
 const FIELDS = ['tickerIp', 'tickerUser', 'tickerPass', 'appleId', 'appPassword',
-  'calendars', 'weatherZip', 'weatherUnits', 'pollSecs', 'weatherMins'];
+  'calendars', 'ignoreNext', 'weatherZip', 'weatherUnits', 'pollSecs', 'weatherMins'];
 const CHECKS = ['autoStart', 'startMinimized'];
 
 function fillSettings(cfg) {

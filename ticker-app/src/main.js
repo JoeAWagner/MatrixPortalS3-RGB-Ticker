@@ -54,6 +54,9 @@ function init() {
   initFileLog();
   settings = new Settings(app.getPath('userData'));
   pushLog({ level: 'info', message: `Ticker Manager ${app.getVersion()} starting (packaged=${app.isPackaged})`, at: new Date().toISOString() });
+  if (settings.loadError) {
+    pushLog({ level: 'error', message: settings.loadError, at: new Date().toISOString() });
+  }
   if (settings.importedFrom) {
     pushLog({ level: 'info', message: `Imported settings from ${settings.importedFrom}`, at: new Date().toISOString() });
   }

@@ -37,9 +37,27 @@ function dedupe(events) {
   });
 }
 
-function nowAndNext(events, now) {
+function parsePatterns(list) {
+  return String(list || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isIgnored(summary, patterns) {
+  const t = String(summary || '').toLowerCase();
+  return patterns.some((p) => t.includes(p));
+}
+
+// ignoreNext holds titles that should never be announced as "Up next" -
+// standing placeholders such as a daily Lunch block, which would otherwise
+// mask the real next meeting. They still count as NOW while in progress,
+// because "NOW: Lunch" is genuinely useful status.
+function nowAndNext(events, now, ignoreNext) {
+  const patterns = parsePatterns(ignoreNext);
   const active = events.filter((e) => e.start <= now && now <= e.end);
-  const upcoming = events.filter((e) => e.start > now);
+  let upcoming = events.filter((e) => e.start > now);
+  if (patterns.length) upcoming = upcoming.filter((e) => !isIgnored(e.summary, patterns));
   active.sort((a, b) => b.start - a.start);
   upcoming.sort((a, b) => a.start - b.start);
   return { current: active[0] || null, next: upcoming[0] || null };
@@ -160,7 +178,7 @@ class SyncEngine extends EventEmitter {
   async tickCalendar(cfg, now, beat) {
     try {
       const { events, failures, total } = await this.source.fetchWindow(now);
-      const { current, next } = nowAndNext(dedupe(events), now);
+      const { current, next } = nowAndNext(dedupe(events), now, cfg.ignoreNext);
 
       // A calendar that did not answer is not a calendar that is empty.
       // Announcing free time on a partial read is the worst possible output.
@@ -206,4 +224,4 @@ class SyncEngine extends EventEmitter {
   }
 }
 
-module.exports = { SyncEngine, formatWhen, truncate, dedupe, nowAndNext };
+module.exports = { SyncEngine, formatWhen, truncate, dedupe, nowAndNext, isIgnored, parsePatterns };

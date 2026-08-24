@@ -18,6 +18,10 @@ const DEFAULTS = {
   lookaheadHours: 12,
   maxTitle: 28,
   freeMessage: 'I am Free',
+  // Titles skipped when choosing "Up next" - recurring placeholders like a
+  // daily Lunch block would otherwise hide the actual next meeting. Still
+  // shown as NOW while they are happening, which is useful status.
+  ignoreNext: 'Lunch',
   startMinimized: true,
   autoStart: true,
 };
@@ -62,15 +66,29 @@ class Settings {
     this.file = path.join(userDataDir, 'settings.json');
     this.values = { ...DEFAULTS };
     this.importedFrom = null;
+    this.loadError = null;
     this.load();
   }
 
   load() {
     if (fs.existsSync(this.file)) {
       try {
-        Object.assign(this.values, JSON.parse(fs.readFileSync(this.file, 'utf8')));
+        // Strip a UTF-8 BOM: anything that rewrites this file with a Windows
+        // editor or PowerShell's Set-Content adds one, and JSON.parse rejects
+        // it. Silently falling through would discard every saved setting.
+        const text = fs.readFileSync(this.file, 'utf8').replace(/^﻿/, '');
+        Object.assign(this.values, JSON.parse(text));
         return;
-      } catch { /* fall through to a fresh import */ }
+      } catch (err) {
+        // Never quietly reset someone's configuration. Keep the bad file so
+        // it can be inspected, and record why the defaults came back.
+        this.loadError = `settings.json could not be read (${err.message})`;
+        try {
+          const backup = this.file + '.bad';
+          fs.copyFileSync(this.file, backup);
+          this.loadError += `; kept a copy at ${backup}`;
+        } catch { /* best effort */ }
+      }
     }
     const legacy = importLegacy([
       'C:/dev/ticker/sync.config.ps1',
