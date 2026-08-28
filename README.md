@@ -230,6 +230,11 @@ Install the built `dist/Ticker Manager Setup *.exe` rather than running from
 source: a packaged install lives outside the synced folder, so the login item
 Electron registers cannot point at a path that has not mounted yet.
 
+**When free, show.** The Status tab picks the wording used in place of NOW when
+no meeting is in progress - *I am Free*, *Doing Paperwork*, *Do Not Disturb*, or
+your own text. It applies immediately, and because it is only wording the app
+re-pushes without rebuilding the CalDAV session.
+
 **Placeholder events.** A standing block such as a daily *Lunch* would always
 be the nearest upcoming item and permanently mask the real next meeting. The
 **Skip for Up next** setting (comma-separated, default `Lunch`) keeps such

@@ -107,6 +107,15 @@ class SyncEngine extends EventEmitter {
     this.log('info', 'Sync stopped');
   }
 
+  // Force the next tick to re-push even if the composed text is unchanged.
+  // Used when a display preference changes: there is no reason to tear down
+  // the CalDAV session (and risk Apple's rate limiter) just to reword a row.
+  refresh() {
+    this._lastMessage = null;
+    this._lastWeather = null;
+    return this.tick();
+  }
+
   restart() {
     this.stop();
     this._lastMessage = null;

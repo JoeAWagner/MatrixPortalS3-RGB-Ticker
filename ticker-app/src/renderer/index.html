@@ -45,6 +45,23 @@
           <div class="meta" id="nextTime"></div>
         </div>
       </div>
+      <div class="card">
+        <h2>When free, show</h2>
+        <div class="row" style="margin-top:0">
+          <select id="freeSel" style="flex:1">
+            <option value="I am Free">I am Free</option>
+            <option value="Doing Paperwork">Doing Paperwork</option>
+            <option value="Do Not Disturb">Do Not Disturb</option>
+            <option value="__custom">Custom...</option>
+          </select>
+          <input type="text" id="freeCustom" placeholder="your own wording"
+                 style="flex:1;display:none" maxlength="40">
+          <span class="meta" id="freeMsg"></span>
+        </div>
+        <div class="meta">Shown in place of NOW when no meeting is in progress.
+          Applies immediately.</div>
+      </div>
+
       <div class="card" id="clockCard">
         <h2>Ticker clock</h2>
         <div class="row" style="margin-top:0">

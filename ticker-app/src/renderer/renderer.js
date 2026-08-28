@@ -184,6 +184,36 @@ async function refreshDeviceConfig() {
   fillDeviceConfig(await window.ticker.getDeviceConfig());
 }
 
+
+// ---- "when free" wording -------------------------------------------------
+// Anything not in the preset list is treated as custom, so a value typed here
+// (or carried over from the old script config) is preserved rather than being
+// silently snapped to the nearest preset.
+var FREE_PRESETS = ['I am Free', 'Doing Paperwork', 'Do Not Disturb'];
+
+function fillFreeMessage(value) {
+  var v = value || 'I am Free';
+  if (FREE_PRESETS.indexOf(v) === -1) {
+    $('freeSel').value = '__custom';
+    $('freeCustom').style.display = '';
+    $('freeCustom').value = v;
+  } else {
+    $('freeSel').value = v;
+    $('freeCustom').style.display = 'none';
+    $('freeCustom').value = '';
+  }
+}
+
+async function saveFreeMessage() {
+  var v = $('freeSel').value === '__custom'
+    ? $('freeCustom').value.trim()
+    : $('freeSel').value;
+  if (!v) return;                       // empty custom box: nothing to save yet
+  await window.ticker.saveSettings({ freeMessage: v });
+  $('freeMsg').textContent = 'saved';
+  setTimeout(function () { $('freeMsg').textContent = ''; }, 1800);
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   PRESETS.forEach((p) => {
     const b = document.createElement('button');
@@ -196,10 +226,21 @@ window.addEventListener('DOMContentLoaded', async () => {
   const st = await window.ticker.getState();
   (st.logs || []).forEach(addLog);
   render(st);
-  fillSettings(await window.ticker.getSettings());
+  const initialCfg = await window.ticker.getSettings();
+  fillSettings(initialCfg);
+  fillFreeMessage(initialCfg.freeMessage);
 
   window.ticker.onLog(addLog);
   window.ticker.onState(render);
+
+  $('freeSel').addEventListener('change', function () {
+    var custom = $('freeSel').value === '__custom';
+    $('freeCustom').style.display = custom ? '' : 'none';
+    if (custom) $('freeCustom').focus();
+    else saveFreeMessage();
+  });
+  $('freeCustom').addEventListener('change', saveFreeMessage);
+  $('freeCustom').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveFreeMessage(); });
 
   $('btnSyncNow').addEventListener('click', () => window.ticker.syncNow());
   $('btnSyncTime').addEventListener('click', async () => {

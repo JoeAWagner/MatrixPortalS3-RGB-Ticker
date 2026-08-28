@@ -169,14 +169,26 @@ ipcMain.handle('getState', () => ({ ...engine.state, logs: logBuffer.slice(-200)
 ipcMain.handle('getSettings', () => settings.get());
 ipcMain.handle('getLogPath', () => logFile);
 
+// Changing these means the CalDAV session or poll loop has to be rebuilt.
+// Anything else is just wording or presentation, and a full restart would
+// reconnect to iCloud for no reason - which is how rate limits get hit.
+const RECONNECT_KEYS = ['appleId', 'appPassword', 'calendars', 'tickerIp',
+  'tickerUser', 'tickerPass', 'pollSecs', 'lookaheadHours'];
+
 ipcMain.handle('saveSettings', (_e, patch) => {
   const before = settings.get();
   const after = settings.update(patch);
+
   if (patch.autoStart !== undefined && patch.autoStart !== before.autoStart) {
     applyAutoStart(after.autoStart);
   }
   pushLog({ level: 'info', message: 'Settings saved', at: new Date().toISOString() });
-  if (after.appleId && after.appPassword) engine.restart();
+
+  if (!after.appleId || !after.appPassword) return after;
+
+  const needsReconnect = RECONNECT_KEYS.some((k) => k in patch && patch[k] !== before[k]);
+  if (needsReconnect) engine.restart();
+  else engine.refresh();          // re-push with the new wording, keep the session
   return after;
 });
 
